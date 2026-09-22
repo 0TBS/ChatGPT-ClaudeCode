@@ -5,6 +5,7 @@
 set -euo pipefail
 
 verdict=$(printf '%s\n' "${REVIEW:-}" | tr -d '\r' | awk 'NF { last = $0 } END { print last }')
+# shellcheck disable=SC2016 # the backtick is a literal markdown character to strip
 verdict=$(printf '%s' "$verdict" | sed -E 's/^[[:space:]*_`]+//; s/[[:space:]*_`]+$//')
 
 case "$verdict" in

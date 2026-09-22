@@ -19,6 +19,9 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: ShellCheck
+        run: shellcheck .github/scripts/*.sh
+
       - name: Test review verdict check
         run: bash .github/scripts/test-check-review-verdict.sh
 
