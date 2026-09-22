@@ -83,13 +83,4 @@ jobs:
       - name: Check review verdict
         env:
           REVIEW: ${{ steps.codex.outputs.final-message }}
-        run: |
-          if printf '%s' "$REVIEW" | grep -q 'CHANGES_REQUESTED'; then
-            echo "::error::Codex requested changes. See the review comment on the PR."
-            exit 1
-          elif printf '%s' "$REVIEW" | grep -q 'APPROVED'; then
-            echo "Codex approved this PR."
-          else
-            echo "::error::Codex review did not end with APPROVED or CHANGES_REQUESTED."
-            exit 1
-          fi
+        run: bash .github/scripts/check-review-verdict.sh
