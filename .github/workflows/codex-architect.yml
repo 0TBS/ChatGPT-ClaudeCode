@@ -353,10 +353,11 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
 
-    # contents: write pushes the build-log commit to the issue branch.
+    # contents: write pushes the build-log commit to the issue branch;
+    # issues: write posts the build log back to the triggering issue.
     permissions:
       contents: write
-      issues: read
+      issues: write
       pull-requests: read
 
     steps:
@@ -427,6 +428,19 @@ jobs:
         run: |
           BODY_FILE="$RUNNER_TEMP/pull-request-body.md" \
             bash "$GITHUB_WORKSPACE/trusted/.github/scripts/create-pull-request.sh"
+
+      # Sends the run's row and both agents' reports back to the issue the
+      # request came from.
+      - name: Post build log to issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          PR_URL: ${{ steps.pr.outputs.url }}
+          LOG_FILE: ${{ github.workspace }}/work/docs/build-log.csv
+        working-directory: ${{ runner.temp }}
+        run: |
+          BODY_FILE="$RUNNER_TEMP/build-log-comment.md" \
+            bash "$GITHUB_WORKSPACE/trusted/.github/scripts/post-build-log.sh"
 
       # A blocker is published as a draft for review, but the run must not
       # look like a completed implementation.

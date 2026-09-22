@@ -63,7 +63,9 @@ permission to create pull requests.
    - adds a row for the run, with both agents' reports, to `docs/build-log.csv`
      (see [Build log](#build-log)) and pushes it to the branch;
    - opens a pull request that closes the issue. If a pull request for the branch
-     is already open, it is reused rather than duplicated.
+     is already open, it is reused rather than duplicated;
+   - posts the run's build-log row and both reports as a comment on the issue, so
+     the result goes back to where the request came from.
 4. The `Codex Review` workflow reviews the pull request against the architecture,
    posts the review as a pull-request comment, and passes only when the review's
    final line is exactly `APPROVED`. `CHANGES_REQUESTED`, anything else, or a review
@@ -91,6 +93,8 @@ committed as part of that pull request. It opens in Excel or Google Sheets.
 | `claude_report` | Claude's report on its implementation: what it built, the checks it ran and their results, problems, and suggested improvements. |
 | `notes` | Left empty for you. |
 
+Each run's row and both reports are also posted as a comment on the triggering
+issue, shown as plain text so nothing in them renders as a link or @mention.
 Each report is at most 2000 bytes, on one line. Write what went well or badly in
 `notes`, and commit it to the default branch.
 Codex and Claude read the notes on every later run and apply the lessons that bear
@@ -173,5 +177,6 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for local prerequisites and the contribut
 - script suites: `test-prepare-issue-context.sh`, `test-write-handoff-docs.sh`,
   `test-check-architect-boundary.sh`,
   `test-validate-implementation-patch.sh`, `test-record-build-log.sh`,
+  `test-post-build-log.sh`,
   `test-publish-branch.sh`,
   `test-create-pull-request.sh` and `test-check-review-verdict.sh`.

@@ -130,7 +130,7 @@ check("the architect job hands over only its starting commit and Codex's output"
 # Implement job.
 check("build token cannot write issues or PRs (the PR uses AI_BUILD_TOKEN)",
       impl_job.get("permissions") == {"contents": "write", "issues": "read", "pull-requests": "read"}
-      and log_job.get("permissions") == {"contents": "write", "issues": "read", "pull-requests": "read"})
+      and log_job.get("permissions") == {"contents": "write", "issues": "write", "pull-requests": "read"})
 order = [
     "Checkout repository",
     "Create issue branch",
@@ -243,10 +243,18 @@ check("the log job runs after both agent jobs succeed",
       log_job.get("needs") == ["architect", "implement"] and "if" not in log_job)
 check("no agent runs in the log job",
       not any(str(s.get("uses", "")).startswith(("openai/", "anthropics/")) for s in lsteps))
-check("log job order: trusted scripts, implementation, log, push, PR, blocker",
+check("log job order: trusted scripts, implementation, log, push, PR, issue comment, blocker",
       [s.get("name") for s in lsteps] == ["Checkout trusted scripts", "Checkout implementation",
                                           "Record run in build log", "Push build log",
-                                          "Create pull request", "Fail on implementation blocker"])
+                                          "Create pull request", "Post build log to issue",
+                                          "Fail on implementation blocker"])
+post = step(lsteps, "Post build log to issue")
+check("the build log is posted to the triggering issue by the trusted script, outside the checkout",
+      "$GITHUB_WORKSPACE/trusted/.github/scripts/post-build-log.sh" in post.get("run", "")
+      and post.get("working-directory") == "${{ runner.temp }}"
+      and post.get("env", {}).get("GH_TOKEN") == "${{ github.token }}"
+      and post.get("env", {}).get("ISSUE_NUMBER") == "${{ github.event.issue.number }}"
+      and "if" not in post)
 trusted = step(lsteps, "Checkout trusted scripts").get("with", {})
 check("the log job's scripts come from the starting commit, without credentials",
       trusted.get("ref") == "${{ needs.architect.outputs.start_sha }}" and trusted.get("path") == "trusted"
