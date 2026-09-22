@@ -5,6 +5,8 @@ on:
     paths:
       - ".github/scripts/**"
       - ".github/workflows/**"
+      - "README.md"
+      - "CLAUDE.md"
 
 jobs:
   test:
@@ -24,3 +26,12 @@ jobs:
 
       - name: Test review verdict check
         run: bash .github/scripts/test-check-review-verdict.sh
+
+      - name: Install PyYAML
+        run: python3 -c 'import yaml' 2>/dev/null || python3 -m pip install --quiet --user --break-system-packages pyyaml
+
+      - name: Test workflow structure
+        run: python3 .github/scripts/test-workflow-structure.py
+
+      - name: Test implementation patch validator
+        run: bash .github/scripts/test-validate-implementation-patch.sh

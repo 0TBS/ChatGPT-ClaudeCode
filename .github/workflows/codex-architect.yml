@@ -20,6 +20,22 @@ jobs:
       actions: read
 
     steps:
+      # Fail before spending any agent time if a required secret is missing.
+      - name: Check required secrets
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          AI_BUILD_TOKEN: ${{ secrets.AI_BUILD_TOKEN }}
+        run: |
+          missing=0
+          for name in OPENAI_API_KEY ANTHROPIC_API_KEY AI_BUILD_TOKEN; do
+            if [ -z "${!name}" ]; then
+              echo "::error::The $name secret is not set. See README.md."
+              missing=1
+            fi
+          done
+          exit "$missing"
+
       - name: Checkout repository
         uses: actions/checkout@v5
         with:
@@ -29,6 +45,11 @@ jobs:
         env:
           ISSUE_NUMBER: ${{ github.event.issue.number }}
         run: git switch -c "ai/issue-${ISSUE_NUMBER}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+
+      # Copy the validator out of the workspace before either agent runs, so
+      # neither can rewrite it to force a pass.
+      - name: Save patch validator
+        run: cp .github/scripts/validate-implementation-patch.sh "$RUNNER_TEMP/validate-implementation-patch.sh"
 
       - name: Run ChatGPT architect
         id: architect
@@ -80,6 +101,8 @@ jobs:
         run: |
           test -s docs/architecture.md
           test -s docs/implementation-plan.md
+          # Mark new docs as intended so git diff --check covers them too.
+          git add --intent-to-add docs/architecture.md docs/implementation-plan.md
           git diff --check
 
       - name: Run Claude Code implementation
@@ -87,6 +110,9 @@ jobs:
         uses: anthropics/claude-code-action@v1
         with:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          github_token: ${{ github.token }}
+          # Allow running the repository's tests, linters and builds.
+          claude_args: --allowedTools "Bash,Read,Edit,Write,Glob,Grep"
           prompt: |
             You are the implementation engineer. The preceding ChatGPT architect
             phase has produced the authoritative design for this issue.
@@ -127,12 +153,7 @@ jobs:
             clean, reviewable working-tree patch for the workflow to commit.
 
       - name: Validate implementation patch
-        run: |
-          git diff --check
-          if git diff --quiet && git diff --cached --quiet; then
-            echo "Claude Code produced no changes." >&2
-            exit 1
-          fi
+        run: bash "$RUNNER_TEMP/validate-implementation-patch.sh"
 
       - name: Commit and push implementation
         env:
@@ -144,9 +165,12 @@ jobs:
           git commit -m "Implement issue #${ISSUE_NUMBER} via architect handoff"
           git push --set-upstream origin "ai/issue-${ISSUE_NUMBER}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
 
+      # Opened with AI_BUILD_TOKEN rather than the built-in token, because
+      # GitHub does not start other workflows (Codex Review) for pull
+      # requests opened with the built-in token.
       - name: Create pull request
         env:
-          GH_TOKEN: ${{ github.token }}
+          GH_TOKEN: ${{ secrets.AI_BUILD_TOKEN }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
           ISSUE_TITLE: ${{ github.event.issue.title }}
         run: |

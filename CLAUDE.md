@@ -14,7 +14,7 @@ Your responsibility is to IMPLEMENT the architecture.
 
 Do not redesign the architecture unless the implementation is impossible.
 
-If architecture changes appear necessary, stop and report the issue rather than replacing technologies or redesigning the system.
+If architecture changes appear necessary, stop and report the issue rather than replacing technologies or redesigning the system. Write the concrete blocker to `docs/implementation-blocker.md` so it is reviewed in the pull request.
 
 For every task:
 
