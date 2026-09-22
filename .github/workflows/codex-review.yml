@@ -27,6 +27,11 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      # Copy the checker out of the workspace before Codex runs, so Codex
+      # cannot rewrite it to force a pass.
+      - name: Save verdict checker
+        run: cp .github/scripts/check-review-verdict.sh "$RUNNER_TEMP/check-review-verdict.sh"
+
       - name: Run Codex Review
         id: codex
         uses: openai/codex-action@v1
@@ -65,3 +70,22 @@ jobs:
             CHANGES_REQUESTED
 
             If changes are requested, provide a numbered list of exact fixes.
+
+      - name: Post review to PR
+        if: always() && steps.codex.outputs.final-message != ''
+        uses: actions/github-script@v7
+        env:
+          REVIEW: ${{ steps.codex.outputs.final-message }}
+        with:
+          script: |
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.payload.pull_request.number,
+              body: `## Codex Review\n\n${process.env.REVIEW}`,
+            });
+
+      - name: Check review verdict
+        env:
+          REVIEW: ${{ steps.codex.outputs.final-message }}
+        run: bash "$RUNNER_TEMP/check-review-verdict.sh"
