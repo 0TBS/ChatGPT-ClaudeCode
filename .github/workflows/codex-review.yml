@@ -1,0 +1,67 @@
+name: Codex Review
+
+on:
+  pull_request:
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - ready_for_review
+
+jobs:
+  codex-review:
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: read
+      pull-requests: write
+
+    outputs:
+      review: ${{ steps.codex.outputs.final-message }}
+
+    steps:
+      - name: Checkout PR
+        uses: actions/checkout@v5
+        with:
+          ref: refs/pull/${{ github.event.pull_request.number }}/merge
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Run Codex Review
+        id: codex
+        uses: openai/codex-action@v1
+        with:
+          openai-api-key: ${{ secrets.OPENAI_API_KEY }}
+          permission-profile: ":workspace"
+
+          prompt: |
+            You are the senior engineer reviewing Claude Code's implementation.
+
+            Read:
+
+            AGENTS.md
+            docs/architecture.md
+            docs/implementation-plan.md
+
+            Review PR #${{ github.event.pull_request.number }}.
+
+            Check:
+
+            1. Does implementation follow the approved architecture?
+            2. Are all implementation tasks complete?
+            3. Are there security issues?
+            4. Are there bugs or edge cases?
+            5. Are tests sufficient?
+            6. Is error handling adequate?
+            7. Were unnecessary dependencies introduced?
+            8. Did Claude change architecture without authorization?
+
+            End your review with exactly one of:
+
+            APPROVED
+
+            or
+
+            CHANGES_REQUESTED
+
+            If changes are requested, provide a numbered list of exact fixes.
