@@ -24,7 +24,9 @@ docs=(docs/architecture.md docs/implementation-plan.md)
   fail "The architect created commits; it must only write the handoff documents."
 
 for f in "${docs[@]}"; do
-  [ -f "$f" ] && [ ! -L "$f" ] || fail "$f is missing or is not a regular file."
+  if [ ! -f "$f" ] || [ -L "$f" ]; then
+    fail "$f is missing or is not a regular file."
+  fi
   [ -s "$f" ] || fail "$f is empty."
   grep -qiE "(#${issue}([^0-9]|$))|(issue[[:space:]]+#?${issue}([^0-9]|$))" "$f" ||
     fail "$f does not identify issue #${issue}."
