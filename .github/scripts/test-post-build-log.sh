@@ -54,6 +54,17 @@ check "posts both reports and the pull request link" "$ok"
 ok=0; grep -qxF 'issue: 7' "$root/posted.md" && grep -qxF 'lines_added: 5' "$root/posted.md" &&
   ! grep -qF 'old codex' "$root/posted.md" && ok=1
 check "posts this run's row, not an earlier one" "$ok"
+ok=0; [ "$(head -n 1 "$root/posted.md")" = "<!-- ai-build-log -->" ] && ok=1
+check "marks the comment so the Codex-side script can find it" "$ok"
+ok=0; python3 - "$root/posted.md" <<'PY' && ok=1
+import csv, io, re, sys
+text = open(sys.argv[1]).read()
+m = re.search(r"^(`{3,})csv\n(.*?)\n\1$", text, re.S | re.M)
+rows = list(csv.reader(io.StringIO(m.group(2)))) if m else []
+sys.exit(0 if len(rows) == 2 and rows[0][0] == "date_utc" and rows[1][1] == "7"
+         and rows[1][13] == "Built it; tests pass." else 1)
+PY
+check "includes the header and this run's row as CSV" "$ok"
 
 # A quoted CSV value can span lines; a line of bare backticks inside it must
 # not close the fence early.
@@ -65,7 +76,7 @@ text = open(sys.argv[1]).read()
 # than any backtick run inside it, so nothing in it renders or pings.
 inside, fence, bad = False, "", []
 for line in text.splitlines():
-    m = re.match(r"^(`{3,})(text)?$", line)
+    m = re.match(r"^(`{3,})(text|csv)?$", line)
     if not inside and m and m.group(2):
         inside, fence = True, m.group(1)
     elif inside and line == fence:

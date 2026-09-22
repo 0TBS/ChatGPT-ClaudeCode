@@ -26,7 +26,7 @@ if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
 fi
 
 python3 - "$LOG_FILE" "${PR_URL:-}" > "$BODY_FILE" <<'EOF'
-import csv, re, sys
+import csv, io, re, sys
 
 log, pr_url = sys.argv[1], sys.argv[2]
 with open(log, newline="", encoding="utf-8-sig") as f:
@@ -36,19 +36,25 @@ if len(rows) < 2:
 header, row = rows[0], rows[-1]
 values = dict(zip(header, row))
 
-def block(text):
+def block(text, lang="text"):
     longest = max((len(m) for m in re.findall(r"`+", text)), default=0)
     fence = "`" * max(3, longest + 1)
-    return f"{fence}text\n{text}\n{fence}"
+    return f"{fence}{lang}\n{text}\n{fence}"
 
 reports = ("codex_report", "claude_report")
 fields = "\n".join(f"{k}: {v}" for k, v in values.items() if k not in reports)
-out = ["## Build log for this run", ""]
+raw = io.StringIO()
+writer = csv.writer(raw, quoting=csv.QUOTE_ALL, lineterminator="\n")
+writer.writerows([header, row])
+# The marker lets ai-build-request.py find this comment.
+out = ["<!-- ai-build-log -->", "## Build log for this run", ""]
 if pr_url.startswith("https://"):
     out += [f"Pull request: {pr_url}", ""]
 out += ["This row was added to `docs/build-log.csv`:", "", block(fields), ""]
 for key, title in (("codex_report", "Codex report (architect)"), ("claude_report", "Claude report (implementer)")):
     out += [f"### {title}", "", block(values.get(key) or "(no report)"), ""]
+out += ["<details><summary>CSV: header and this run's row</summary>", "",
+        block(raw.getvalue().rstrip("\n"), "csv"), "", "</details>", ""]
 out.append("Add feedback in the `notes` column of `docs/build-log.csv` on the default "
            "branch; Codex and Claude read it on the next run.")
 print("\n".join(out))

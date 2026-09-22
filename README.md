@@ -29,6 +29,42 @@ reviews.
 No other repository setting is required. The built-in `GITHUB_TOKEN` does not need
 permission to create pull requests.
 
+## Start from a Codex chat
+
+You can run the whole loop from a Codex cloud chat: you describe the change, Codex
+opens the issue, the workflow builds it, and the build log comes back into the same
+chat.
+
+```
+Codex chat prompt → issue on GitHub → workflow runs → Codex architects
+→ Claude builds → build log (CSV and both reports) printed back in the chat
+```
+
+One-time setup for each repository's Codex environment (**Codex → Settings →
+Environments → your repository**):
+
+1. Create a fine-grained personal access token for this repository only, with
+   **Issues: Read and write** and **Actions: Read**. Use a separate token from
+   `AI_BUILD_TOKEN`: this one is visible to Codex in the chat.
+2. Add it to the environment as an **environment variable** (not a secret, since
+   secrets reach only the setup script) named `GH_TOKEN`.
+3. Turn on agent internet access for `api.github.com`, allowing `GET` and `POST`.
+
+Then, in a Codex chat on that environment, ask for a build, for example:
+
+> Start an ai-build: add a contact page with a form that emails us.
+
+Codex follows `AGENTS.md`: it writes the issue and runs
+`python3 .github/scripts/ai-build-request.py start --title … --body-file …`. That
+script opens the issue, adds the `ai-build` label (which starts the workflow), and
+waits for the build log. It prints the log, including the CSV row and both reports,
+or the run's link if the run failed. A build usually takes 5 to 10 minutes; if the
+chat's wait runs out first, ask Codex to run `ai-build-request.py wait <issue number>`.
+
+Codex cannot be messaged from GitHub, so the chat has to fetch the result itself. It
+cannot see results from runs it did not wait for, but the same build log is always
+on the issue and in `docs/build-log.csv`.
+
 ## Use
 
 1. Open a detailed issue describing the desired behavior, constraints, and examples.
@@ -169,7 +205,8 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for local prerequisites and the contribut
 `Workflow Scripts` workflow runs it on every pull request that changes `.github/`,
 `README.md`, `CLAUDE.md` or `AGENTS.md`. It covers:
 
-- YAML parsing, `bash -n` and ShellCheck on every script and workflow `run:` block,
+- YAML parsing, Python parsing, `bash -n` and ShellCheck on every script and
+  workflow `run:` block,
   and `actionlint` when installed;
 - `test-workflow-structure.py`: step order, the handoff gate before Claude, prompt
   and secret handling, action pinning, timeouts, permissions, blocker handling,
@@ -177,6 +214,6 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for local prerequisites and the contribut
 - script suites: `test-prepare-issue-context.sh`, `test-write-handoff-docs.sh`,
   `test-check-architect-boundary.sh`,
   `test-validate-implementation-patch.sh`, `test-record-build-log.sh`,
-  `test-post-build-log.sh`,
+  `test-post-build-log.sh`, `test-ai-build-request.sh`,
   `test-publish-branch.sh`,
   `test-create-pull-request.sh` and `test-check-review-verdict.sh`.
