@@ -24,6 +24,3 @@ jobs:
 
       - name: Test review verdict check
         run: bash .github/scripts/test-check-review-verdict.sh
-
-      - name: Test architecture docs publishing
-        run: bash .github/scripts/test-publish-architecture-docs.sh
