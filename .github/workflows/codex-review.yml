@@ -27,6 +27,11 @@ jobs:
           fetch-depth: 0
           persist-credentials: false
 
+      # Copy the checker out of the workspace before Codex runs, so Codex
+      # cannot rewrite it to force a pass.
+      - name: Save verdict checker
+        run: cp .github/scripts/check-review-verdict.sh "$RUNNER_TEMP/check-review-verdict.sh"
+
       - name: Run Codex Review
         id: codex
         uses: openai/codex-action@v1
@@ -83,4 +88,4 @@ jobs:
       - name: Check review verdict
         env:
           REVIEW: ${{ steps.codex.outputs.final-message }}
-        run: bash .github/scripts/check-review-verdict.sh
+        run: bash "$RUNNER_TEMP/check-review-verdict.sh"

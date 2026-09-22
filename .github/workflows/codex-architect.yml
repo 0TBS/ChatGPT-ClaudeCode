@@ -67,15 +67,32 @@ jobs:
           # Ignore any git hooks Codex may have written into the workspace.
           git config core.hooksPath /dev/null
 
+          if [ -L docs ]; then
+            echo "Refusing to publish: docs is a symlink."
+            exit 1
+          fi
+
           for f in docs/architecture.md docs/implementation-plan.md; do
             if [ ! -f "$f" ]; then
               echo "Codex did not create $f."
               exit 1
             fi
+            if [ -L "$f" ]; then
+              echo "Refusing to publish $f: it is a symlink."
+              exit 1
+            fi
           done
 
-          # Drop anything Codex staged or committed, so only the two docs are published.
-          git reset -q "$GITHUB_SHA"
+          # Publish from a clean checkout of the default branch, so nothing else
+          # Codex staged, edited or committed in the workspace can be pushed.
+          branch="${{ github.event.repository.default_branch }}"
+          publish="$RUNNER_TEMP/publish"
+          git fetch -q origin "$branch"
+          git worktree add -q --detach "$publish" "origin/$branch"
+          mkdir -p "$publish/docs"
+          cp docs/architecture.md docs/implementation-plan.md "$publish/docs/"
+          cd "$publish"
+
           git add docs/architecture.md docs/implementation-plan.md
 
           unexpected=$(git diff --cached --name-only | grep -vxE 'docs/(architecture|implementation-plan)\.md' || true)
@@ -91,5 +108,4 @@ jobs:
           fi
 
           git commit -m "Add architecture and implementation plan for #${{ github.event.issue.number }}"
-          git pull --rebase origin "${{ github.event.repository.default_branch }}"
-          git push origin "HEAD:${{ github.event.repository.default_branch }}"
+          git push origin "HEAD:$branch"
