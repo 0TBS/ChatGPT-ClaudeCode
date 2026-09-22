@@ -7,6 +7,8 @@ script="$(cd "$(dirname "$0")" && pwd)/publish-branch.sh"
 root=$(mktemp -d)
 trap 'rm -rf "$root"' EXIT
 failures=0
+# Only the test that checks the output sets GITHUB_OUTPUT.
+unset GITHUB_OUTPUT GITHUB_STEP_SUMMARY
 
 G=(-c user.name=test -c user.email=test@example.com)
 BRANCH=ai/issue-7-1-1
@@ -52,6 +54,12 @@ setup; publish; rc=$?
 ok=0; [ "$rc" -eq 0 ] && remote_has && [ "$(remote_files)" = "README.md feature.txt " ] &&
   [ "$(git --git-dir="$root/remote" log -1 --format=%s "refs/heads/$BRANCH")" = "Implement issue #7" ] && ok=1
 check "commits the staged change and pushes the branch" "$ok"
+
+setup; rm -f "$root/output"
+GITHUB_OUTPUT="$root/output" publish; rc=$?
+ok=0; [ "$rc" -eq 0 ] &&
+  [ "$(cat "$root/output")" = "head=$(git --git-dir="$root/remote" rev-parse "refs/heads/$BRANCH")" ] && ok=1
+check "reports the pushed commit as the head output" "$ok"
 
 setup; git "${G[@]}" commit -q -m "claude committed" || die "agent commit"
 publish; rc=$?

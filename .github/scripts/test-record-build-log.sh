@@ -9,7 +9,7 @@ trap 'rm -rf "$root"' EXIT
 failures=0
 
 G=(-c user.name=test -c user.email=test@example.com)
-HEADER=date_utc,issue,issue_title,outcome,architecture_title,files_changed,lines_added,lines_removed,agent_commits,changed_files,branch,run_url,notes
+HEADER=date_utc,issue,issue_title,outcome,architecture_title,files_changed,lines_added,lines_removed,agent_commits,changed_files,branch,run_url,codex_report,claude_report,notes
 
 die() { echo "setup failed: $*" >&2; exit 2; }
 
@@ -35,7 +35,7 @@ setup() {
 
 # run [extra env assignments...]
 run() {
-  env ISSUE_NUMBER=7 BRANCH=ai/issue-7-1-1 ISSUE_TITLE="Add feature" \
+  env -u GITHUB_STEP_SUMMARY -u GITHUB_OUTPUT ISSUE_NUMBER=7 BRANCH=ai/issue-7-1-1 ISSUE_TITLE="Add feature" \
     GITHUB_SERVER_URL=https://github.com GITHUB_REPOSITORY=o/r GITHUB_RUN_ID=99 \
     "$@" bash "$script" "$START" >"$root/out" 2>&1
 }
@@ -75,15 +75,26 @@ check "records the branch" "$(field 1 branch)" "ai/issue-7-1-1"
 check "leaves notes empty for maintainers" "$(field 1 notes)" ""
 check "stages the log" "$(git diff --cached --name-only -- docs/build-log.csv)" "docs/build-log.csv"
 
+setup; run CODEX_REPORT=$'Chose a CLI.\nRisk: none.' CLAUDE_REPORT="Added tests, all pass."
+check "records Codex's report on one line" "$(field 1 codex_report)" "Chose a CLI. Risk: none."
+check "records Claude's report" "$(field 1 claude_report)" "Added tests, all pass."
+
+# One ASCII byte then two-byte characters, so byte 2000 splits a character.
+long="a$(printf 'é%.0s' $(seq 1500))"
+setup; run CLAUDE_REPORT="$long"
+check "cuts a long report to 2000 bytes, dropping a split character" \
+  "$(printf '%s' "$(field 1 claude_report)" | wc -c | tr -d ' ')" 1999
+check "the cut report is still valid UTF-8" "$(field 1 claude_report | iconv -f UTF-8 -t UTF-8 >/dev/null 2>&1 && echo ok)" ok
+
 setup; run BLOCKER=true
 check "records a blocker as blocked" "$(field 1 outcome)" blocked
 
-setup "$HEADER"$'\n''"2026-01-01T00:00:00Z","3","Old","implemented","","1","1","0","0","a.md","b","u","keep tests smaller"'$'\n'
+setup "$HEADER"$'\n''"2026-01-01T00:00:00Z","3","Old","implemented","","1","1","0","0","a.md","b","u","","","keep tests smaller"'$'\n'
 run
 check "appends after earlier rows" "$(rows)" 3
 check "keeps maintainers' notes on earlier rows" "$(field 1 notes)" "keep tests smaller"
 
-setup "$HEADER"$'\n''"2026-01-01T00:00:00Z","3","Old","implemented","","1","1","0","0","a.md","b","u",""'
+setup "$HEADER"$'\n''"2026-01-01T00:00:00Z","3","Old","implemented","","1","1","0","0","a.md","b","u","","",""'
 run
 check "handles an existing log with no final newline" "$(rows)" 3
 
@@ -97,6 +108,11 @@ setup "$HEADER,priority,reviewer"$'\n'
 run
 check "keeps columns maintainers added at the end" "$(head -n 1 docs/build-log.csv)" "$HEADER,priority,reviewer"
 check "pads the row to the added columns" "$(field 1 reviewer)" ""
+
+setup "$HEADER"',"priority, reviewer",owner'$'\n'
+run
+check "counts a quoted column name with a comma as one column" \
+  "$(python3 -c 'import csv; r=list(csv.reader(open("docs/build-log.csv", newline=""))); print(len(r[0]), len(r[1]))')" "17 17"
 
 setup $'\xef\xbb\xbf'"$HEADER"$'\r\n'
 run; code=$?

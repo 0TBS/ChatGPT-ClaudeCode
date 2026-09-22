@@ -53,6 +53,10 @@ for p in sorted(pathlib.Path(".github/workflows").glob("*.yml")):
     yaml.safe_load(p.read_text()); print("parsed", p)'
 run "extract workflow run blocks" extract_run_blocks
 run "bash -n on scripts and every run block" bash_n_all
+run "parse Python scripts" python3 -c '
+import ast, sys
+for f in sys.argv[1:]:
+    ast.parse(open(f).read(), f); print("parsed", f)' .github/scripts/*.py
 run "shellcheck scripts" shellcheck .github/scripts/*.sh
 run "shellcheck every run block" shellcheck "$blocks"/*.sh
 if command -v actionlint >/dev/null 2>&1; then
