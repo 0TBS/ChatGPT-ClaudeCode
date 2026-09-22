@@ -112,6 +112,8 @@ blocker) to the run's summary page.
 
 ## Tests
 
+See [CONTRIBUTING.md](CONTRIBUTING.md) for local prerequisites and the contribution workflow.
+
 `.github/scripts/run-checks.sh` runs every check locally without API secrets. The
 `Workflow Scripts` workflow runs it on every pull request that changes `.github/`,
 `README.md`, `CLAUDE.md` or `AGENTS.md`. It covers:

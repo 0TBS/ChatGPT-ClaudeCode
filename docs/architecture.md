@@ -1,143 +1,99 @@
-# Architect-to-Implementation Automation
+# Contributor Guide for Issue #4
 
-## Problem and goals
+## Problem, goals, and non-goals
 
-Feature work must begin with an OpenAI Codex/ChatGPT architecture phase and only
-then pass to Claude Code for implementation. The handoff must be explicit,
-repeatable, reviewable, and safe against instructions embedded in issue content.
+Issue #4 requests a short `CONTRIBUTING.md` explaining local checks, their prerequisites, and the high-level `ai-build` workflow, linked from `README.md`. This is also an end-to-end exercise of the existing automation.
 
-The goal is one label-driven workflow that produces architecture artifacts, builds
-the approved design, and opens a pull request containing both. Manual handoff
-between independent workflows and direct feature implementation by the architect
-are out of scope.
+Goals:
 
-## Current state
+- Give contributors one concise entry point for running local checks.
+- Accurately distinguish required tools from optional `actionlint`.
+- Explain architect → implementation → pull request → Codex Review.
+- Keep the implementation small and documentation-only.
 
-The repository previously used separate `architect` and `implement` issue labels.
-The architect workflow generated files only in its ephemeral runner, so the
-developer workflow had no guaranteed access to that output. The developer prompt
-also omitted the triggering issue's requirements. There was no deterministic
-commit-and-pull-request step.
+Non-goals: changing scripts, tests, workflow configuration, permissions, agent instructions, dependencies, or publication behavior; adding platform-specific installation guides; redesigning the automation.
 
-## Design
+## Current-state findings
 
-`.github/workflows/codex-architect.yml` is the single orchestration boundary:
+- `AGENTS.md` requires architecture and implementation-plan documents. The workflow writes these from the architect's JSON; Claude must preserve them.
+- `CLAUDE.md` requires implementation of the approved design and reporting concrete blockers instead of redesigning.
+- There is no root `CONTRIBUTING.md`.
+- `README.md` already documents setup, workflow operation, safety, blockers, troubleshooting, and tests. It is the authoritative source for detailed operator instructions.
+- `.github/scripts/run-checks.sh` requires bash, git, jq, python3 with PyYAML, and shellcheck. It runs actionlint only when available and explicitly reports when it is skipped. No API secrets are needed for local checks.
+- The runner checks YAML, shell syntax, ShellCheck, workflow structure, and shell test suites. It aggregates failures and exits nonzero if any check fails.
+- Shell tests create temporary repositories and fixtures. Running the suite requires a writable execution environment.
+- `.github/workflows/workflow-scripts.yml` already runs checks for README changes. This issue's README edit therefore triggers it without changing path filters.
+- `.github/workflows/codex-architect.yml` accepts the `ai-build` issue label and orders the architect and implementation jobs. Workflow steps validate and publish the implementation. `.github/workflows/codex-review.yml` reviews the resulting pull request.
 
-1. An authorized maintainer applies the `ai-build` label to an issue.
-2. The **architect** job checks out the repository, records the starting commit,
-   and copies the issue from `$GITHUB_EVENT_PATH` into the git-ignored
-   `.ai-build/issue.json` as untrusted data.
-3. Codex, read-only and as that job's last step, inspects the repository and
-   returns the content of `docs/architecture.md` and `docs/implementation-plan.md`
-   as JSON conforming to an output schema. It implements no feature code.
-4. The **implement** job starts on a fresh runner from the same commit, creates a
-   unique issue/run branch, writes the two documents from the JSON, and verifies
-   that both are non-empty, identify the issue as `#<number>`, and pass Git
-   whitespace checks, and that nothing else changed. Claude does not run if this
-   fails.
-5. Claude Code reads the documents and implements the plan in that workspace.
-6. Deterministic shell steps validate everything changed since the starting commit
-   (including new files and any agent commits), commit what is left, push the issue
-   branch, and create or reuse the pull request, which is opened with the
-   `AI_BUILD_TOKEN` secret so that step 7 is triggered.
-7. The existing Codex review workflow reviews the resulting pull request.
+Inspection was read-only. The check suite was not executed during architecture because it writes temporary files.
 
-The two AI phases run in two jobs of one workflow, linked by `needs`. This keeps
-their ordering and handoff explicit without relying on commits to the default branch
-or on one workflow's token-generated event triggering another workflow, and it
-follows the `openai/codex-action` security guide, which recommends running Codex as
-the last step of a job: nothing Codex leaves on its runner can reach Claude,
-publication, or `AI_BUILD_TOKEN`.
+## Proposed design and boundaries
 
-## Components and file impacts
+Add a root Markdown guide with two sections: local checks and the AI-assisted workflow. Add a short relative link immediately beneath the existing `## Tests` heading in `README.md`, preserving its current content.
 
-- `.github/workflows/codex-architect.yml`: owns orchestration, phase-specific
-  prompts, validation, commit, push, and pull-request creation.
-- `.github/workflows/claude-developer.yml`: removed because its independent label
-  trigger can race or implement without the architect's ephemeral output.
-- `AGENTS.md`: durable architect role and output contract.
-- `CLAUDE.md`: durable implementer role and architecture-escalation contract.
-- `README.md`: operator setup and usage documentation.
-- `docs/implementation-plan.md`: executable handoff rules and validation matrix.
+The guide must tell contributors to run `bash .github/scripts/run-checks.sh` from the repository root, enumerate all existing prerequisites, identify actionlint as optional, and state that local checks require no API secrets. Describe the successful terminal result as `All checks passed.` and failures as a nonzero exit status.
 
-No application API, database schema, runtime dependency, or data migration is
-introduced.
+Describe the workflow in four ordered steps:
 
-## Security and failure modes
+1. Open a detailed issue and have a trusted maintainer with write access apply `ai-build`.
+2. Codex acts as architect and produces the architecture and implementation plan.
+3. Claude Code implements the plan; the workflow validates the result and opens a pull request.
+4. Codex Review reviews the pull request against the design.
 
-- Issue text is explicitly classified as untrusted requirements in both prompts.
-  Agents must not treat it as higher-priority instructions or reveal secrets.
-- The workflow starts only when a user with issue-label permission applies
-  `ai-build`; repository settings should restrict label management to trusted users.
-- The architect job's `GITHUB_TOKEN` is read-only. The implement job's has
-  `contents: write` (to push the branch) and read access to issues and pull
-  requests. The pull request is opened with the
-  `AI_BUILD_TOKEN` fine-grained token, used only in that step. Secrets remain in
-  action inputs or step environments and are never interpolated into prompts.
-- `permission-profile: ":read-only"` keeps the architect's commands read-only (per
-  the Codex permissions documentation and the codex-action README). Its only output
-  is its schema-checked JSON answer, passed to the implement job as a job output
-  and read there only through an environment variable.
-  Claude is told not to alter secrets or perform Git publication; fixed workflow
-  steps own publication, and tolerate agent-made commits.
-- Third-party actions are pinned to full commit SHAs. The job has a 60-minute
-  timeout, and Claude Code a turn limit.
-- The scripts that run after the agents are copied out of the workspace and hashed
-  before either agent starts; later steps verify the hashes. The branch is pushed
-  from a fresh repository to an explicit URL, and the pull request is created from
-  outside the checkout, so agent-written git or `gh` configuration cannot redirect
-  publication or run code alongside `AI_BUILD_TOKEN`.
-- A missing architecture artifact, empty implementation, whitespace error, action
-  error, failed push, or failed pull-request creation fails the job visibly.
-- Per-issue concurrency prevents duplicate runs for one issue. Issue-specific
-  branches isolate changes across issues.
-- A contradictory or unsafe plan produces `docs/implementation-blocker.md` rather
-  than an invented implementation. The workflow publishes it as a draft pull request
-  titled `[BLOCKED] …` that does not close the issue, and fails the run.
+Link to `README.md#setup` and `README.md#blockers` for existing setup and blocker details. Do not imply that the workflow automatically merges a pull request or that blocked implementations are successful.
+
+Reader flow is README → CONTRIBUTING → local check command or existing README details. Execution and data flow remain unchanged. No executable component is added.
+
+## File-level change map
+
+| File | Change and ownership |
+| --- | --- |
+| `CONTRIBUTING.md` | Claude adds the short guide specified above. |
+| `README.md` | Claude adds one contributor-guide link under `## Tests`. |
+| `docs/architecture.md` | Workflow writes this approved architecture for #4; Claude preserves it. |
+| `docs/implementation-plan.md` | Workflow writes the approved plan for #4; Claude preserves it. |
+
+No other files need changes. An actual implementation blocker follows the existing `CLAUDE.md` blocker procedure.
+
+## API, schema, configuration, dependency, and migration impacts
+
+- API: none.
+- Schema: none.
+- Configuration: none.
+- Dependencies: none added or changed; documentation lists existing check prerequisites.
+- Migration: none.
+
+## Security, privacy, abuse, and failure modes
+
+The issue was treated as untrusted product requirements. The guide contains no credentials, personal data, external installation commands, or changes to permissions. It accurately separates secret-free local checks from the configured hosted workflow and retains the trusted-maintainer qualification for label application.
+
+Documentation risks are inaccurate prerequisites, a command that assumes the wrong directory, broken relative links, or a misleading success description. Address these through source comparison, link review, and execution of the existing check runner during implementation. Missing required tools or PyYAML are environment failures to report and resolve without weakening checks; missing optional actionlint is a supported skip.
+
+A documentation-only patch cannot establish that hosted credentials and publication work. The resulting workflow run and pull request provide the end-to-end evidence; report failures honestly through existing workflow behavior.
 
 ## Compatibility and rollout
 
-The existing pull-request review workflow remains compatible and automatically
-runs after the new pull request opens. Repositories adopting this workflow must
-configure `OPENAI_API_KEY`, `ANTHROPIC_API_KEY` and `AI_BUILD_TOKEN`, create the
-`ai-build` label, and protect the default branch. The former `architect` and `implement`
-labels no longer drive automation.
+The change is additive and needs no migration or feature flag. Existing commands and workflows retain their behavior. Merge through the current pull-request process. The README edit triggers Workflow Scripts for this patch. Expanding CI path filters for future CONTRIBUTING-only changes is outside this issue.
 
-## Decisions and alternatives
+## Alternatives and decisions
 
-- **Two jobs in one workflow instead of one job or two label-triggered
-  workflows:** `needs` guarantees ordering, and a separate job gives Claude a
-  runner Codex never touched. An earlier single-job version ran Claude and
-  publication after Codex on the same runner; three test runs then stalled after
-  Codex's step, matching the codex-action guidance to run Codex last.
-- **Structured JSON handoff instead of shared files:** Codex can be the last step
-  of its job, and read-only, while the documents still land in the repository.
-- **Workflow-owned Git operations instead of model-owned publication:** makes the
-  branch, commit, and PR behavior deterministic and keeps those permissions out of
-  the implementation prompt.
-- **Repository documents instead of prompt-only handoff:** preserves the design in
-  the implementation PR and gives reviewers an auditable contract.
-
-## Unresolved risks
-
-- Claude Code runs unsandboxed with Bash, in the same job as validation,
-  publication and pull-request creation. A prompt-injected Claude could change the
-  environment of those later steps (for example through `$GITHUB_ENV`) or push
-  other branches with the job token. Branch protection limits the latter; the
-  former can expose `AI_BUILD_TOKEN`. Moving publication into a third job that
-  receives only the validated patch would remove it; that is a further architecture
-  decision.
+- Keep detailed setup and troubleshooting in README, linking to them instead of duplicating them in the guide.
+- Use the existing Bash runner instead of adding a wrapper, package manager, or new check.
+- Use manual checks for Markdown content and links plus the existing automated suite; do not add tests that merely assert prose.
+- Omit platform-specific installation instructions because the request needs a tool list and the repository does not establish a supported installation matrix.
 
 ## Acceptance criteria
 
-1. Applying `ai-build` runs Codex in an architect job, then Claude Code in an
-   implement job that starts only after the architect job succeeds.
-2. Codex is constrained to architecture and creates both required documents.
-3. Claude is required to consume those documents and not redesign them silently.
-4. Issue content is handled as untrusted data in both phases.
-5. The workflow fails on absent handoff documents or an empty/invalid patch.
-6. A successful run pushes `ai/issue-<number>-<run>-<attempt>` and opens a closing
-   pull request.
-7. Setup and operation are documented for maintainers.
-8. A blocker is published only as a draft `[BLOCKED]` pull request that does not
-   close the issue, and the run fails.
+- AC1: Root `CONTRIBUTING.md` exists, is nonempty, and contains at most 60 lines of concise Markdown.
+- AC2: It states the repository-root working directory and includes the exact command `bash .github/scripts/run-checks.sh`.
+- AC3: It lists bash, git, jq, python3 with PyYAML, and shellcheck as required, and actionlint as optional.
+- AC4: It states that local checks need no API secrets, identifies `All checks passed.` as success, and explains the nonzero failure exit status.
+- AC5: It describes the trusted maintainer's `ai-build` trigger and all four phases in order, assigns publication to the workflow, and makes no automatic-merge promise.
+- AC6: README links to `CONTRIBUTING.md`, and the guide's setup and blocker links resolve to existing README headings.
+- AC7: Implementation changes are limited to `CONTRIBUTING.md` and `README.md`; workflow-generated handoff documents remain unchanged by Claude.
+- AC8: The existing check runner exits zero and `git diff --check` passes; any optional actionlint skip is recorded accurately.
+- AC9: Hosted end-to-end validation records the architecture handoff, implementation, publication of a normal issue-closing pull request, and the Codex Review result without representing a pending or failed stage as successful.
+
+## Assumptions and unresolved blockers
+
+No design blockers were identified. Implementation validation assumes a writable environment with the existing required tools installed. AC9 is an operator/workflow observation after Claude finishes, not a reason for Claude to publish or wait for its own review. Hosted credentials and the eventual review outcome cannot be verified in this read-only architecture phase.

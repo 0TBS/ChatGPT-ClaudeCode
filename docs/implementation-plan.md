@@ -1,85 +1,115 @@
-# Implementation Plan: Architect-to-Implementation Automation
+# Implementation Plan for Issue #4
 
-## 1. Consolidate orchestration
+Implement the contributor guide as a small documentation-only patch. Read `CLAUDE.md`, `AGENTS.md`, and both approved handoff documents first. Preserve `docs/architecture.md` and `docs/implementation-plan.md`. Do not modify scripts, workflows, tests, or dependencies, and do not commit, push, or open a pull request.
 
-- Replace the architect-only workflow with an `ai-build` workflow in
-  `.github/workflows/codex-architect.yml` with two jobs: `architect`, whose last
-  step is a read-only Codex run returning both documents as schema-checked JSON,
-  and `implement`, which `needs` it and runs on a fresh runner from the same
-  commit.
-- Create a unique `ai/issue-<number>-<run>-<attempt>` branch before either agent
-  runs, so a retry cannot collide with output from an earlier attempt.
-- Configure per-issue concurrency without canceling an in-progress build.
-- Remove `.github/workflows/claude-developer.yml` so implementation cannot start
-  independently of the architecture phase.
+## Task 1: Add the contributor guide
 
-**Verification:** `test-workflow-structure.py` confirms the job layout, that Codex
-is the architect job's last step, and that Claude runs only in the implement job;
-`test-write-handoff-docs.sh` covers turning the JSON into the two documents.
+**File:** `CONTRIBUTING.md` (new).
 
-## 2. Optimize the architect prompt
+Use the following content, keeping the file below 60 lines:
 
-- Direct Codex to read repository guidance and inspect the existing repository.
-- Read issue data from `GITHUB_EVENT_PATH` and classify it as untrusted product
-  input, rather than interpolating issue text into the privileged prompt.
-- Require complete architecture and ordered implementation-plan documents with
-  security, compatibility, error handling, exact affected areas, tests, and a
-  validation matrix.
-- Explicitly prohibit feature implementation and unsupported assumptions.
+````markdown
+# Contributing
 
-**Verification:** Review the prompt against every required architecture section and
-the architect constraints in `AGENTS.md`.
+## Run checks locally
 
-## 3. Optimize the Claude Code handoff prompt
+Install bash, git, jq, python3 with PyYAML, and shellcheck. Optionally install
+ actionlint; the runner uses it when available and reports a skip otherwise.
 
-- Establish an explicit reading order and make the generated design authoritative.
-- Require minimal implementation, tests, relevant repository checks, error-path
-  handling, documentation, and final acceptance-criteria verification.
-- Prohibit redesign, scope expansion, secret changes, check bypasses, and model-owned
-  Git publication.
-- Define a concrete blocker artifact instead of allowing architectural guessing.
+From the repository root, run:
 
-**Verification:** Review the prompt against `CLAUDE.md` and ensure every acceptance
-criterion must be checked before completion.
+```bash
+bash .github/scripts/run-checks.sh
+```
 
-## 4. Make publication deterministic
+No API secrets are needed for local checks. The runner checks workflow YAML,
+ shell syntax, ShellCheck results, workflow structure, and the script test suites.
+A successful run ends with `All checks passed.`; failed checks produce a nonzero
+exit status. Resolve reported failures before submitting your change.
 
-- Assert non-empty handoff documents after the architect step.
-- Record the starting commit before either agent runs, and measure every later
-  check from it, so new files and agent-made commits are included.
-- After the architect: require both documents to name the issue and reject any
-  other change or commit (`check-architect-boundary.sh`).
-- Run `git diff --check` after each phase and reject a final patch that changes
-  nothing beyond the two documents (`validate-implementation-patch.sh`).
-- Commit only what is left uncommitted, push the issue branch from a fresh
-  repository, and create the PR with `AI_BUILD_TOKEN` from outside the checkout,
-  reusing an open PR for the branch (`publish-branch.sh`,
-  `create-pull-request.sh`).
-- Publish a blocker as a draft `[BLOCKED]` PR that does not close the issue, and
-  fail the run.
-- Pin actions to commit SHAs, set job timeouts and a Claude turn limit.
+## AI-assisted workflow
 
-**Verification:** `.github/scripts/run-checks.sh` runs `bash -n` and ShellCheck on
-every script and extracted `run` block, and a test suite per script.
+1. Open a detailed issue and have a trusted maintainer with repository write
+   access apply the `ai-build` label.
+2. Codex acts as architect and produces `docs/architecture.md` and
+   `docs/implementation-plan.md`.
+3. Claude Code implements the approved plan. The workflow validates the result
+   and opens a pull request.
+4. Codex Review reviews the pull request against the architecture.
 
-## 5. Document operation
+See the README for [workflow setup](README.md#setup) and
+[implementation blockers](README.md#blockers).
+````
 
-- Expand `README.md` with prerequisites, label setup, execution flow, failure
-  behavior, and the optimized prompts' locations.
-- Keep `AGENTS.md` and `CLAUDE.md` aligned with the workflow roles.
+Remove the single leading space before `actionlint` and `shell syntax` in the wrapped prose above so paragraphs align normally.
 
-**Verification:** Follow the README from a clean repository configuration and check
-that all mentioned secret names, labels, branches, and files match the workflow.
+**Required behavior:** The guide presents the existing command and tool contract and all four workflow phases without duplicating detailed setup instructions.
 
-## Validation matrix
+**Edge/error cases:** Missing actionlint is optional, not a failure. Other listed prerequisites remain required. Local checks must not be described as requiring hosted API credentials. Publication belongs to the workflow; review is not automatic merge. Blocker details remain at the linked README section.
 
-| Acceptance criterion | Validation |
-| --- | --- |
-| Codex runs in its own job before Claude | `test-workflow-structure.py` |
-| Both architecture artifacts are created and name the issue | `test-check-architect-boundary.sh` |
-| Claude consumes rather than redesigns the plan | Docs hash check in the validate step; `test-workflow-structure.py` |
-| Issue content is untrusted | `test-workflow-structure.py` (no interpolation); `test-prepare-issue-context.sh` |
-| Missing/empty/invalid output fails | `test-check-architect-boundary.sh`, `test-validate-implementation-patch.sh` |
-| Successful run pushes a branch and opens a PR | `test-publish-branch.sh`, `test-create-pull-request.sh`; live smoke test after secrets are configured |
-| Maintainer setup is documented | README consistency checks in `test-workflow-structure.py` |
-| A blocker is never reported as an implementation | `test-create-pull-request.sh`, `test-workflow-structure.py` |
+**Verification:** Compare tool names and result wording with `.github/scripts/run-checks.sh`; compare workflow wording with README and `.github/workflows/codex-architect.yml`. Manually inspect the rendered Markdown and confirm the file is no more than 60 lines using `wc -l CONTRIBUTING.md`. Covers AC1–AC5.
+
+## Task 2: Link the guide from README
+
+**File:** `README.md`.
+
+Immediately after `## Tests` and its following blank line, insert:
+
+```markdown
+See [CONTRIBUTING.md](CONTRIBUTING.md) for local prerequisites and the contribution workflow.
+```
+
+Leave a blank line before the existing tests paragraph and preserve all existing README content.
+
+**Required behavior:** Contributors can find the new guide from the existing testing instructions.
+
+**Edge/error cases:** Use a relative, case-correct link. Confirm that the guide's `README.md#setup` and `README.md#blockers` destinations match existing headings. Do not change CI path filters: the README edit already triggers Workflow Scripts.
+
+**Verification:** Inspect the diff and preview the Markdown; follow all three new links or explicitly verify their file and heading targets. Covers AC6 and contributes to AC7.
+
+## Task 3: Validate the complete documentation patch
+
+**Components:** Both changed Markdown files and existing `.github/scripts/run-checks.sh`; no changes to validation code.
+
+Run from the repository root in the writable implementation environment:
+
+```bash
+bash .github/scripts/run-checks.sh
+git diff --check
+git diff -- README.md
+git status --short
+```
+
+Inspect the new `CONTRIBUTING.md` directly because an untracked file is not included in ordinary `git diff` output. Check it for trailing whitespace and correct Markdown as well. Compare both handoff documents with their contents at the start of the Claude phase; the workflow also verifies their hash after implementation.
+
+**Required behavior:** Existing checks pass and the final patch contains only the two implementation files in addition to the pre-existing workflow-written handoff changes. No prose-specific test is necessary for this reversible documentation addition.
+
+**Edge/error cases:** If required tools are missing, report the actual environment limitation and resolve it through approved environment setup where possible; do not alter the runner or claim a pass. Record an actionlint skip as a skip. If a failure is unrelated to the documentation, report it without expanding this patch into workflow repairs. If the design proves impossible, use the existing `docs/implementation-blocker.md` procedure rather than changing the approved documents.
+
+**Verification:** Record the runner's exit status, whitespace check, optional actionlint status, and manual content/link/scope checks in the implementation summary. Covers AC1–AC8. Leave publication to the workflow.
+
+## Task 4: Observe hosted end-to-end completion
+
+**Components:** Existing `ChatGPT Architect to Claude Code`, `Workflow Scripts`, and `Codex Review` workflow runs and the resulting pull request. This is a post-implementation operator/workflow check, not a Claude publication task.
+
+**Required behavior:** Verify successful handoff and implementation validation, a normal pull request containing both handoff documents and the two documentation changes, an issue-closing reference to #4, passing Workflow Scripts, and a published Codex Review result.
+
+**Edge/error cases:** A draft `[BLOCKED]` pull request, failed publication, missing review, or pending check is not successful end-to-end completion. Record the actual outcome and use existing troubleshooting guidance. Do not expose secrets, bypass checks, or promise that review will approve.
+
+**Verification:** Inspect the run summary, PR file list and body, review comment, and required check results. Covers AC9. Claude may finish its implementation summary with this check explicitly pending because publication follows its step.
+
+## Final validation matrix
+
+| Criterion | Verification | Owner |
+| --- | --- | --- |
+| AC1 | Inspect nonempty root guide; `wc -l CONTRIBUTING.md` is at most 60; Markdown preview | Claude/manual |
+| AC2 | Verify repository-root wording and exact Bash command in guide | Claude/manual |
+| AC3 | Compare all six required tools and optional actionlint with runner comments and behavior | Claude/manual |
+| AC4 | Compare secret-free statement, success text, and failure exit description with existing runner | Claude/manual |
+| AC5 | Read ordered workflow steps against existing workflow and README; verify maintainer qualification, publication ownership, and no merge promise | Claude/manual |
+| AC6 | Preview README and guide; verify relative file links and Setup/Blockers heading targets | Claude/manual |
+| AC7 | Inspect diff, untracked files, and handoff preservation; existing workflow hash check provides automated enforcement for handoff files | Claude/manual and workflow/automated |
+| AC8 | `bash .github/scripts/run-checks.sh` exits zero; `git diff --check` passes; inspect new file whitespace and report optional actionlint status | Claude/automated and manual |
+| AC9 | Inspect hosted run summary, normal PR with closing reference to #4, Workflow Scripts result, and published Codex Review result | Operator/manual after publication |
+
+The plan changes only the guide and its README entry, matching the architecture. It requires no new implementation technology or architectural choice.
