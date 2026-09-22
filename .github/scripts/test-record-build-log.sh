@@ -35,7 +35,7 @@ setup() {
 
 # run [extra env assignments...]
 run() {
-  env ISSUE_NUMBER=7 BRANCH=ai/issue-7-1-1 ISSUE_TITLE="Add feature" \
+  env -u GITHUB_STEP_SUMMARY -u GITHUB_OUTPUT ISSUE_NUMBER=7 BRANCH=ai/issue-7-1-1 ISSUE_TITLE="Add feature" \
     GITHUB_SERVER_URL=https://github.com GITHUB_REPOSITORY=o/r GITHUB_RUN_ID=99 \
     "$@" bash "$script" "$START" >"$root/out" 2>&1
 }
@@ -108,6 +108,11 @@ setup "$HEADER,priority,reviewer"$'\n'
 run
 check "keeps columns maintainers added at the end" "$(head -n 1 docs/build-log.csv)" "$HEADER,priority,reviewer"
 check "pads the row to the added columns" "$(field 1 reviewer)" ""
+
+setup "$HEADER"',"priority, reviewer",owner'$'\n'
+run
+check "counts a quoted column name with a comma as one column" \
+  "$(python3 -c 'import csv; r=list(csv.reader(open("docs/build-log.csv", newline=""))); print(len(r[0]), len(r[1]))')" "17 17"
 
 setup $'\xef\xbb\xbf'"$HEADER"$'\r\n'
 run; code=$?

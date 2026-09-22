@@ -62,7 +62,19 @@ case "$header" in
   "$columns" | "$columns",*) ;;
   *) fail "The first line of $log must start with: $columns" ;;
 esac
-extra=$(( $(printf '%s' "$header" | tr -cd ',' | wc -c) - $(printf '%s' "$columns" | tr -cd ',' | wc -c) ))
+# Count header fields as CSV: commas inside quotes do not separate fields.
+count_fields() {
+  printf '%s\n' "$1" | awk '{
+    n = 1; q = 0
+    for (i = 1; i <= length($0); i++) {
+      c = substr($0, i, 1)
+      if (c == "\"") q = !q
+      else if (c == "," && !q) n++
+    }
+    print n
+  }'
+}
+extra=$(( $(count_fields "$header") - $(count_fields "$columns") ))
 
 # What changed, measured from the starting commit, not counting the log.
 g add --all

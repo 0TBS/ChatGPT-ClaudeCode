@@ -7,6 +7,8 @@ script="$(cd "$(dirname "$0")" && pwd)/publish-branch.sh"
 root=$(mktemp -d)
 trap 'rm -rf "$root"' EXIT
 failures=0
+# Only the test that checks the output sets GITHUB_OUTPUT.
+unset GITHUB_OUTPUT GITHUB_STEP_SUMMARY
 
 G=(-c user.name=test -c user.email=test@example.com)
 BRANCH=ai/issue-7-1-1
