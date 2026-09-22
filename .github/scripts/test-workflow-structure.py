@@ -314,6 +314,27 @@ check("the verdict fails unless the review was published",
       and "check-review-verdict.sh" in vrun)
 check("the verdict job is read-only", ver.get("permissions") == {"contents": "read"})
 
+# Checkouts use immutable SHAs. GitHub deletes refs/pull/<n>/merge once a PR
+# is merged or closed, which failed a verdict job that started after a merge.
+review_refs = [str(s.get("with", {}).get("ref", "")) for j in rjobs.values() for s in j.get("steps", [])
+               if str(s.get("uses", "")).startswith("actions/checkout@")]
+check("no review checkout uses the temporary refs/pull/<n>/merge ref",
+      len(review_refs) == 2 and not any("refs/pull/" in r or r.endswith("/merge") for r in review_refs))
+cr_checkout = [s for s in cr.get("steps", []) if str(s.get("uses", "")).startswith("actions/checkout@")]
+check("the Codex review checks out the exact PR head SHA from the event",
+      len(cr_checkout) == 1
+      and cr_checkout[0].get("with", {}).get("ref") == "${{ github.event.pull_request.head.sha }}"
+      and cr_checkout[0].get("with", {}).get("persist-credentials") is False)
+ver_checkout = [s for s in ver.get("steps", []) if str(s.get("uses", "")).startswith("actions/checkout@")]
+vwith = ver_checkout[0].get("with", {}) if len(ver_checkout) == 1 else {}
+check("the verdict parser is checked out from the trusted base SHA, never the PR",
+      vwith.get("ref") == "${{ github.event.pull_request.base.sha }}")
+check("the verdict checkout is sparse (.github/scripts) and keeps no credentials",
+      vwith.get("sparse-checkout") == ".github/scripts" and vwith.get("persist-credentials") is False)
+check("the verdict job checks out before it runs the parser",
+      0 <= ver.get("steps", []).index(ver_checkout[0]) < ver.get("steps", []).index(vstep)
+      if ver_checkout and vstep else False)
+
 # ---------------------------------------------------------------- docs
 readme = (ROOT / "README.md").read_text()
 secrets = sorted(set(re.findall(r"secrets\.([A-Z0-9_]+)", (WORKFLOWS / "codex-architect.yml").read_text())))
