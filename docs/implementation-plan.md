@@ -2,16 +2,20 @@
 
 ## 1. Consolidate orchestration
 
-- Replace the architect-only workflow with a sequential `ai-build` workflow in
-  `.github/workflows/codex-architect.yml`.
+- Replace the architect-only workflow with an `ai-build` workflow in
+  `.github/workflows/codex-architect.yml` with two jobs: `architect`, whose last
+  step is a read-only Codex run returning both documents as schema-checked JSON,
+  and `implement`, which `needs` it and runs on a fresh runner from the same
+  commit.
 - Create a unique `ai/issue-<number>-<run>-<attempt>` branch before either agent
   runs, so a retry cannot collide with output from an earlier attempt.
 - Configure per-issue concurrency without canceling an in-progress build.
 - Remove `.github/workflows/claude-developer.yml` so implementation cannot start
   independently of the architecture phase.
 
-**Verification:** Parse the workflow as YAML and confirm that the Codex step occurs
-before the Claude step and both belong to the same job.
+**Verification:** `test-workflow-structure.py` confirms the job layout, that Codex
+is the architect job's last step, and that Claude runs only in the implement job;
+`test-write-handoff-docs.sh` covers turning the JSON into the two documents.
 
 ## 2. Optimize the architect prompt
 
@@ -71,7 +75,7 @@ that all mentioned secret names, labels, branches, and files match the workflow.
 
 | Acceptance criterion | Validation |
 | --- | --- |
-| Codex runs before Claude in one job | `test-workflow-structure.py` |
+| Codex runs in its own job before Claude | `test-workflow-structure.py` |
 | Both architecture artifacts are created and name the issue | `test-check-architect-boundary.sh` |
 | Claude consumes rather than redesigns the plan | Docs hash check in the validate step; `test-workflow-structure.py` |
 | Issue content is untrusted | `test-workflow-structure.py` (no interpolation); `test-prepare-issue-context.sh` |

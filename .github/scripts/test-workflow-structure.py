@@ -9,6 +9,7 @@ blockers cannot pass as implementations, branch names are unique per
 attempt, PR creation is idempotent, and review results are published.
 Script behaviour itself is covered by the test-*.sh suites.
 """
+import json
 import pathlib
 import re
 import sys
@@ -54,6 +55,7 @@ def dump(obj):
 UNTRUSTED = re.compile(
     r"\$\{\{\s*github\.(event\.(issue\.(title|body)|pull_request\.(title|body|head\.ref)"
     r"|comment\.body|review\.body)|head_ref)"
+    r"|\$\{\{\s*needs\.architect\.outputs\.handoff"
 )
 PINNED = re.compile(r"^\s*(-\s+)?uses:\s+[\w.-]+/[\w./-]+@[0-9a-f]{40} # v\d+(\.\d+)*\s*$")
 
@@ -78,26 +80,60 @@ for path in sorted(WORKFLOWS.glob("*.yml")):
 # ------------------------------------------------------------------ ai-build
 build = load("codex-architect.yml")
 jobs = build["jobs"]
-job = jobs.get("architect-and-build", {})
-steps = job.get("steps", [])
+arch = jobs.get("architect", {})
+impl_job = jobs.get("implement", {})
+asteps = arch.get("steps", [])
+steps = impl_job.get("steps", [])
 
-check("ai-build runs as a single job", list(jobs) == ["architect-and-build"])
+check("ai-build has an architect job and an implement job", list(jobs) == ["architect", "implement"])
 check("triggered only by an issue being labeled", build["on"] == {"issues": {"types": ["labeled"]}})
-check("job runs only for the ai-build label", job.get("if") == "github.event.label.name == 'ai-build'")
+check("the architect job runs only for the ai-build label",
+      arch.get("if") == "github.event.label.name == 'ai-build'")
+check("the implement job runs only after the architect job succeeds",
+      impl_job.get("needs") == "architect" and "if" not in impl_job)
 check("per-issue concurrency without cancelling a running build",
       build.get("concurrency", {}).get("cancel-in-progress") is False
       and "github.event.issue.number" in build.get("concurrency", {}).get("group", ""))
 check("the separate Claude Developer workflow is gone", not (WORKFLOWS / "claude-developer.yml").exists())
-check("build token cannot write issues or PRs (the PR uses AI_BUILD_TOKEN)",
-      job.get("permissions") == {"contents": "write", "issues": "read", "pull-requests": "read"})
 
+# Architect job: Codex alone, read-only, last step, structured output.
+check("the architect job is read-only", arch.get("permissions") == {"contents": "read"})
+codex_steps = [s for s in asteps if str(s.get("uses", "")).startswith("openai/codex-action@")]
+check("exactly one Codex step, in the architect job", len(codex_steps) == 1
+      and not any(str(s.get("uses", "")).startswith("openai/codex-action@") for s in steps))
+check("Codex is the last step of the architect job",
+      bool(asteps) and str(asteps[-1].get("uses", "")).startswith("openai/codex-action@"))
+check("the architect order: secrets, checkout, starting commit, issue copy, Codex",
+      [s.get("name") for s in asteps] == ["Check required secrets", "Checkout repository",
+                                          "Record starting commit", "Prepare issue context",
+                                          "Run ChatGPT architect"])
+codex = codex_steps[0] if codex_steps else {}
+cwith = codex.get("with", {})
+check("Codex runs with the :read-only permission profile", cwith.get("permission-profile") == ":read-only")
+try:
+    schema = json.loads(cwith.get("output-schema", ""))
+except ValueError:
+    schema = {}
+check("Codex returns both documents through a strict output schema",
+      schema.get("additionalProperties") is False
+      and sorted(schema.get("required", [])) == ["architecture_md", "implementation_plan_md"]
+      and all(schema.get("properties", {}).get(k, {}).get("type") == "string"
+              for k in ("architecture_md", "implementation_plan_md")))
+check("the architect checkout keeps no credentials",
+      step(asteps, "Checkout repository").get("with", {}).get("persist-credentials") is False)
+check("the architect job hands over only its starting commit and Codex's output",
+      arch.get("outputs") == {"start_sha": "${{ steps.start.outputs.sha }}",
+                              "handoff": "${{ steps.architect.outputs.final-message }}"})
+
+# Implement job.
+check("build token cannot write issues or PRs (the PR uses AI_BUILD_TOKEN)",
+      impl_job.get("permissions") == {"contents": "write", "issues": "read", "pull-requests": "read"})
 order = [
-    "Check required secrets",
     "Checkout repository",
-    "Record starting commit and create issue branch",
+    "Create issue branch",
     "Save workflow scripts",
     "Prepare issue context",
-    "Run ChatGPT architect",
+    "Write architecture handoff",
     "Verify architecture handoff",
     "Run Claude Code implementation",
     "Validate implementation patch",
@@ -107,52 +143,54 @@ order = [
     "Report outcome",
 ]
 positions = [index(steps, n) for n in order]
-check("steps run in the designed order", -1 not in positions and positions == sorted(positions))
+check("implement steps run in the designed order", -1 not in positions and positions == sorted(positions))
+check("the implement job checks out the architect's starting commit",
+      step(steps, "Checkout repository").get("with", {}).get("ref") == "${{ needs.architect.outputs.start_sha }}")
 
-codex = [i for i, s in enumerate(steps) if str(s.get("uses", "")).startswith("openai/codex-action@")]
 claude = [i for i, s in enumerate(steps) if str(s.get("uses", "")).startswith("anthropics/claude-code-action@")]
-check("exactly one Codex step and one Claude step", len(codex) == 1 and len(claude) == 1)
-if codex and claude:
-    check("Codex runs before Claude", codex[0] < claude[0])
-    handoff = index(steps, "Verify architecture handoff")
-    check("the handoff check sits between Codex and Claude", codex[0] < handoff < claude[0])
+check("exactly one Claude step", len(claude) == 1)
+if claude:
+    handoff_i = index(steps, "Verify architecture handoff")
+    check("the handoff is written and checked before Claude",
+          0 <= index(steps, "Write architecture handoff") < handoff_i < claude[0])
     gate = steps[: claude[0] + 1]
     check("Claude cannot run after a failed handoff: no if/continue-on-error up to Claude",
           all("if" not in s and not s.get("continue-on-error") for s in gate))
-    check("the handoff step runs the architect boundary check",
-          "check-architect-boundary.sh" in step(steps, "Verify architecture handoff").get("run", ""))
+check("Codex's output reaches the implement job only through an env var",
+      step(steps, "Write architecture handoff").get("env", {}).get("HANDOFF")
+      == "${{ needs.architect.outputs.handoff }}"
+      and "write-handoff-docs.sh" in step(steps, "Write architecture handoff").get("run", "")
+      and sum("needs.architect.outputs.handoff" in dump(s) for s in steps) == 1)
+check("the handoff step runs the architect boundary check",
+      "check-architect-boundary.sh" in step(steps, "Verify architecture handoff").get("run", ""))
 
-start = step(steps, "Record starting commit and create issue branch")
-check("the starting commit is recorded before either agent runs",
-      "git rev-parse HEAD" in start.get("run", "") and codex and index(steps, start.get("name")) < codex[0])
+start = step(steps, "Create issue branch")
+check("the branch starts from the architect's commit, verified",
+      start.get("env", {}).get("START_SHA") == "${{ needs.architect.outputs.start_sha }}"
+      and 'git rev-parse HEAD)" != "$START_SHA"' in start.get("run", ""))
 check("branch names are unique per run and attempt",
       re.search(r'branch="ai/issue-\$\{ISSUE_NUMBER\}-\$\{GITHUB_RUN_ID\}-\$\{GITHUB_RUN_ATTEMPT\}"',
                 start.get("run", "")) is not None)
 
 save = step(steps, "Save workflow scripts")
-saved = ["check-architect-boundary", "validate-implementation-patch", "publish-branch", "create-pull-request"]
-check("the scripts used after the agents are saved and hashed before them",
-      all(s in save.get("run", "") for s in saved) and "sha256sum" in save.get("run", ""))
-for n in ["Verify architecture handoff", "Validate implementation patch",
-          "Commit and push implementation", "Create pull request"]:
+saved = ["validate-implementation-patch", "publish-branch", "create-pull-request"]
+check("the scripts used after Claude are saved and hashed before it",
+      all(s in save.get("run", "") for s in saved) and "sha256sum" in save.get("run", "")
+      and 0 <= index(steps, "Save workflow scripts") < claude[0] if claude else False)
+for n in ["Validate implementation patch", "Commit and push implementation", "Create pull request"]:
     run = step(steps, n).get("run", "")
     check(f"'{n}' verifies the saved scripts' hashes before using them",
           'sha256sum --check --status' in run and "$RUNNER_TEMP/ai-build-scripts" in run
           and ".github/scripts" not in run)
 
-for i in codex + claude:
-    s = steps[i]
+for label, s in [("Run ChatGPT architect", codex), ("Run Claude Code implementation", steps[claude[0]] if claude else {})]:
     prompt = s.get("with", {}).get("prompt", "")
-    label = s.get("name")
     check(f"{label}: reads the issue as data from the GITHUB_EVENT_PATH copy",
           "$GITHUB_EVENT_PATH" in prompt and ".ai-build/issue.json" in prompt)
     check(f"{label}: treats issue content as untrusted", "untrusted" in prompt)
     check(f"{label}: never interpolates any expression into the prompt", "${{" not in prompt)
     check(f"{label}: no AI_BUILD_TOKEN in its inputs or env", "AI_BUILD_TOKEN" not in dump(s))
 
-architect = steps[codex[0]] if codex else {}
-check("the architect uses the :workspace permission profile",
-      architect.get("with", {}).get("permission-profile") == ":workspace")
 impl = steps[claude[0]] if claude else {}
 args = impl.get("with", {}).get("claude_args", "")
 check("Claude has a turn limit", re.search(r"--max-turns \d+", args) is not None)
@@ -160,7 +198,7 @@ check("Claude is explicitly allowed Bash, so it can run checks", "--allowedTools
 check("Claude authenticates with the job token, not the GitHub App/OIDC",
       impl.get("with", {}).get("github_token") == "${{ github.token }}")
 
-token_steps = [s.get("name") for s in steps if "AI_BUILD_TOKEN" in dump(s)]
+token_steps = [s.get("name") for j in jobs.values() for s in j.get("steps", []) if "AI_BUILD_TOKEN" in dump(s)]
 check("AI_BUILD_TOKEN is used only by the secrets check and PR creation",
       token_steps == ["Check required secrets", "Create pull request"])
 pr = step(steps, "Create pull request")
