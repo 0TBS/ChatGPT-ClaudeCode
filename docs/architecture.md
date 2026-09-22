@@ -1,82 +1,89 @@
-# README CSV Handoff Smoke Test — Issue #10
+# Codex Review checkout: immutable SHAs and a trusted verdict parser
 
 ## Problem, goals, and non-goals
 
-Issue #10 requests one exact sentence appended to `README.md` to exercise the existing build-log handoff:
+Codex Review run 35794457082 failed in the `verdict` job at its checkout step:
+`fatal: couldn't find remote ref refs/pull/11/merge`. PR #11 had been merged
+while the `codex-review` job was still running, and by the time `verdict`
+started, GitHub had deleted the PR's temporary merge ref.
 
-> The ai-build pipeline returns a CSV build log to the Codex chat that requested the build.
+Goals:
 
-The goal is a single-line README addition that preserves every existing byte. No application, script, test, workflow, configuration, or dependency changes are needed. Building new handoff functionality or changing Markdown structure is out of scope.
+- Review workflows keep working when a PR is merged or closed before a
+  downstream job starts.
+- The review examines exactly the PR head commit the triggering event names.
+- The verdict parser always comes from the trusted base revision.
+- Permissions, pinned actions and existing checks stay as they are.
 
-The issue's literal requirement that no other repository content change conflicts with mandatory pipeline artifacts. Repository policy requires this architecture, the implementation plan, and the workflow-generated build-log row. Interpret the README-only restriction as the implementation scope; the final pull request will also contain these required pipeline artifacts. Do not suppress or alter pipeline controls to satisfy the issue's wording.
+Non-goals: changing the review prompt, the verdict rules, the publish job,
+or the ai-build workflow.
 
 ## Current-state findings
 
-- `AGENTS.md` requires a read-only architecture phase returning both documents and a report. `CLAUDE.md` prohibits the implementer from editing the approved documents or build log and requires `.ai-build/claude-report.md`.
-- `README.md` already explains CSV publication on the issue and retrieval by `ai-build-request.py` into the requesting chat. The requested sentence summarizes existing behavior.
-- The README uses LF line endings, ends with a newline, and does not contain the requested sentence. Its current final line is the continuation listing `test-create-pull-request.sh` and `test-check-review-verdict.sh`.
-- `.github/workflows/codex-architect.yml` writes the architecture handoff, validates implementation, publishes the branch, appends the build-log row, opens the PR, and posts the result to the issue.
-- `.github/scripts/run-checks.sh` runs existing syntax, lint, workflow-structure, and script tests. README changes trigger `.github/workflows/workflow-scripts.yml`.
-- Existing tests cover CSV generation, posting reports and PR links, and printing the retrieved CSV through the request helper. They need no modifications for this sentence.
-- `docs/build-log.csv` contains one previous run, for #4, with an empty `notes` column. There is no applicable maintainer feedback.
-- Existing architecture documents describe #4 and are historical context, not current-state authority.
+- Both checkouts in `.github/workflows/codex-review.yml` used
+  `refs/pull/${{ github.event.pull_request.number }}/merge`.
+- **Lifecycle race.** `refs/pull/<n>/merge` is a temporary ref GitHub
+  maintains only while a PR is open and mergeable. Once the PR is merged or
+  closed, or its merge commit cannot be computed, fetching it fails. The three
+  jobs run in sequence and `verdict` waits for the others, so a quick merge
+  reliably lost this race. Even when the ref exists it can move: a later push
+  to the base branch recomputes it, so two jobs in one run could check out
+  different trees.
+- **Trust boundary.** The `verdict` job ran `.github/scripts/check-review-verdict.sh`
+  from the PR's merge commit, which contains the PR's own changes. A pull
+  request could therefore rewrite the parser to accept any review, and the
+  check meant to enforce the verdict would pass on the PR's say-so.
 
-Inspection was read-only. No files were modified and no test suites were run; the full runner creates temporary files.
+## Design
 
-## Proposed design and control flow
+| Job | Checkout ref | Why |
+| --- | --- | --- |
+| `codex-review` | `${{ github.event.pull_request.head.sha }}` | Immutable, and exactly the commit the event names; `fetch-depth: 0` keeps the base commit available for the diff the prompt describes. |
+| `verdict` | `${{ github.event.pull_request.base.sha }}` | Immutable and trusted: only code already on the base branch runs, so the PR cannot change the parser that judges it. |
 
-Append the exact sentence plus one LF directly after the README's existing final newline. Add no blank line, heading, quote marker, indentation, wrapping, or trailing spaces. The invariant is:
-
-`result_bytes = original_bytes + sentence.encode('utf-8') + b'\n'`
-
-The existing Markdown list may render the sentence as continuation text. Preserve the requested source-level single-line append rather than adding formatting outside scope.
-
-Component boundaries remain unchanged: Claude owns the README edit and temporary implementation report; the workflow owns the approved documents, publication, and CSV log. The existing flow remains issue → architecture → README implementation and checks → branch/PR and log → issue comment → requesting chat's waiting helper. A successful local check does not prove that an external chat retrieved this run's result.
+Both SHAs stay reachable after a merge or close. The `verdict` checkout keeps
+`sparse-checkout: .github/scripts` and `persist-credentials: false`; the review
+checkout keeps `persist-credentials: false`. The review text still reaches the
+parser only through the `REVIEW` environment variable.
 
 ## File-level change map
 
-| File | Owner and change |
+| File | Change |
 | --- | --- |
-| `README.md` | Claude appends exactly the requested line. Only implementation content change. |
-| `docs/architecture.md` | Workflow writes this design for #10; Claude preserves it. |
-| `docs/implementation-plan.md` | Workflow writes the approved plan for #10; Claude preserves it. |
-| `.ai-build/claude-report.md` | Claude writes the required temporary report; it is not a committed product file. |
-| `docs/build-log.csv` | Existing log job appends this run's row; Claude does not edit it. |
+| `.github/workflows/codex-review.yml` | Head SHA for `codex-review`, base SHA for `verdict` (step renamed "Checkout base scripts"), comments explaining both. |
+| `.github/scripts/test-workflow-structure.py` | Regression checks for both refs, no `refs/pull/` ref, sparse and credential-free verdict checkout, checkout before parser. |
+| `docs/architecture.md`, `docs/implementation-plan.md` | This design and its plan. |
 
-All other tracked files remain unchanged. Do not add persistent tests for this low-impact documentation append.
+## API, schema, configuration, dependency, and migration impacts
 
-## Interface and migration impacts
+None. No new actions, inputs or secrets; action pins are unchanged.
 
-- API: none.
-- Schema: none; the existing CSV schema remains unchanged.
-- Configuration: none.
-- Dependencies: none; use existing checks and Python standard library for byte comparison.
-- Migration: none.
+## Security and failure modes
 
-## Security, privacy, abuse, and failures
-
-The sentence contains no executable content, links, user data, or secrets. Continue treating issue text as untrusted requirements, not commands. Do not inspect or print credentials, change permissions, invoke publication manually, or edit safety checks.
-
-Likely failures are a duplicate append, newline normalization, unintended whitespace or formatting changes, and changes outside README. Verify the complete byte sequence against the starting commit and inspect the complete diff. If the expected baseline differs, stop and investigate rather than rewriting existing content. Missing check dependencies or test failures must be reported accurately; do not weaken checks or modify unrelated files to make this change pass.
-
-The issue's whole-PR single-file condition cannot hold under existing policy. This exception must remain visible in the report and review; do not claim literal compliance with that condition.
+- The parser can no longer be replaced by the PR under review.
+- Permissions are unchanged: `codex-review` and `verdict` have
+  `contents: read`, `publish-review` has `issues`/`pull-requests: write`.
+- Checking out the head SHA runs no PR code with credentials: the checkout
+  keeps no token, and Codex runs with the `:workspace` profile as before.
+- A PR changing `check-review-verdict.sh` itself is judged by the base
+  version; the change takes effect once merged.
 
 ## Compatibility and rollout
 
-Runtime behavior and public interfaces are unchanged. Publish through the existing reviewable PR workflow. No deployment or feature flag is needed. Reverting the appended line reverses the product change; retain historical pipeline records according to normal repository practice.
+The review now reads the PR head rather than a trial merge with the base.
+Reviews of PRs behind their base branch therefore see the branch as
+submitted, which matches what the prompt already describes (base SHA to head
+SHA). The fix takes effect for PRs opened or updated after it merges.
 
-## Alternatives and decisions
+## Acceptance criteria
 
-- A dedicated paragraph with a blank separator would render more clearly but adds another line; reject it for this exact-append request.
-- Changing handoff scripts or adding new tests would expand scope without changing required behavior; reuse existing coverage.
-- Omitting required documents or the build log would violate repository policy and defeat the handoff exercise; retain workflow-owned artifacts.
+1. No checkout in `codex-review.yml` uses `refs/pull/<n>/merge`.
+2. `codex-review` checks out `github.event.pull_request.head.sha`.
+3. `verdict` checks out `github.event.pull_request.base.sha`, sparse to
+   `.github/scripts`, without persisted credentials, before running the parser.
+4. Permissions and action pins are unchanged.
+5. `test-workflow-structure.py`, `test-check-review-verdict.sh`,
+   `run-checks.sh` and `git diff --check` pass; the new structure checks fail
+   against the previous workflow.
 
-## Acceptance criteria and blockers
-
-- **AC1:** README bytes equal the starting-commit README bytes followed by the exact sentence and one LF. The sentence is the final line and occurs once.
-- **AC2:** The implementation changes only `README.md`; approved handoff documents remain unchanged by Claude. At publication, the only additional tracked changes are the two required documents and the workflow-generated build log.
-- **AC3:** `git diff --check` and the existing check runner pass, with any optional actionlint skip accurately recorded. No test or check is weakened.
-- **AC4:** Claude provides a secret-free report of at most 150 words that records the implementation, validation results, and mandatory-artifact scope exception.
-- **AC5:** After publication, an explicit operator check confirms the #10 CSV row, both reports, and PR link on the issue; if a requesting chat is waiting, confirm that its existing helper displays the result there.
-
-No technical implementation blockers remain under the policy-based scope interpretation above. Literal whole-PR README-only compliance is impossible in this workflow. Live chat receipt is an external verification item and must not be claimed without observation.
+No blockers.

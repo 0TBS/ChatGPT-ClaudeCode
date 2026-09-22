@@ -22,10 +22,13 @@ jobs:
       review: ${{ steps.codex.outputs.final-message }}
 
     steps:
+      # The exact head commit the event names, not refs/pull/<n>/merge: GitHub
+      # deletes that temporary merge ref once the PR is merged or closed, so a
+      # job starting after that could not check it out.
       - name: Checkout PR
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
-          ref: refs/pull/${{ github.event.pull_request.number }}/merge
+          ref: ${{ github.event.pull_request.head.sha }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -115,10 +118,13 @@ jobs:
       contents: read
 
     steps:
-      - name: Checkout PR
+      # The verdict parser comes from the base commit, never from the pull
+      # request, which could otherwise change it to pass any review. The base
+      # SHA also still exists after the PR is merged or closed.
+      - name: Checkout base scripts
         uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
-          ref: refs/pull/${{ github.event.pull_request.number }}/merge
+          ref: ${{ github.event.pull_request.base.sha }}
           persist-credentials: false
           sparse-checkout: .github/scripts
 
