@@ -41,12 +41,22 @@ criterion must be checked before completion.
 ## 4. Make publication deterministic
 
 - Assert non-empty handoff documents after the architect step.
-- Run `git diff --check` after each phase and reject an empty final patch.
-- Commit all architecture and implementation changes with a stable bot identity,
-  push the issue branch, and create a PR that closes the issue.
+- Record the starting commit before either agent runs, and measure every later
+  check from it, so new files and agent-made commits are included.
+- After the architect: require both documents to name the issue and reject any
+  other change or commit (`check-architect-boundary.sh`).
+- Run `git diff --check` after each phase and reject a final patch that changes
+  nothing beyond the two documents (`validate-implementation-patch.sh`).
+- Commit only what is left uncommitted, push the issue branch from a fresh
+  repository, and create the PR with `AI_BUILD_TOKEN` from outside the checkout,
+  reusing an open PR for the branch (`publish-branch.sh`,
+  `create-pull-request.sh`).
+- Publish a blocker as a draft `[BLOCKED]` PR that does not close the issue, and
+  fail the run.
+- Pin actions to commit SHAs, set job timeouts and a Claude turn limit.
 
-**Verification:** Run a shell syntax check on extracted multiline `run` scripts and
-inspect all expressions used for branch, title, body, and base branch.
+**Verification:** `.github/scripts/run-checks.sh` runs `bash -n` and ShellCheck on
+every script and extracted `run` block, and a test suite per script.
 
 ## 5. Document operation
 
@@ -61,10 +71,11 @@ that all mentioned secret names, labels, branches, and files match the workflow.
 
 | Acceptance criterion | Validation |
 | --- | --- |
-| Codex runs before Claude in one job | YAML structure inspection/test |
-| Both architecture artifacts are created | `test -s` workflow gate |
-| Claude consumes rather than redesigns the plan | Prompt review against `CLAUDE.md` |
-| Issue content is untrusted | Static prompt assertions in both action steps |
-| Missing/empty/invalid output fails | `test -s`, `git diff --check`, and empty-diff gate |
-| Successful run pushes a branch and opens a PR | Shell-step review; live smoke test after secrets are configured |
-| Maintainer setup is documented | README link/name consistency check |
+| Codex runs before Claude in one job | `test-workflow-structure.py` |
+| Both architecture artifacts are created and name the issue | `test-check-architect-boundary.sh` |
+| Claude consumes rather than redesigns the plan | Docs hash check in the validate step; `test-workflow-structure.py` |
+| Issue content is untrusted | `test-workflow-structure.py` (no interpolation); `test-prepare-issue-context.sh` |
+| Missing/empty/invalid output fails | `test-check-architect-boundary.sh`, `test-validate-implementation-patch.sh` |
+| Successful run pushes a branch and opens a PR | `test-publish-branch.sh`, `test-create-pull-request.sh`; live smoke test after secrets are configured |
+| Maintainer setup is documented | README consistency checks in `test-workflow-structure.py` |
+| A blocker is never reported as an implementation | `test-create-pull-request.sh`, `test-workflow-structure.py` |
