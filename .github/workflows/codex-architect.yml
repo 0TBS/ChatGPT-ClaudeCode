@@ -64,6 +64,8 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Ignore any git hooks Codex may have written into the workspace.
+          git config core.hooksPath /dev/null
 
           for f in docs/architecture.md docs/implementation-plan.md; do
             if [ ! -f "$f" ]; then
@@ -72,7 +74,16 @@ jobs:
             fi
           done
 
+          # Drop anything Codex staged or committed, so only the two docs are published.
+          git reset -q "$GITHUB_SHA"
           git add docs/architecture.md docs/implementation-plan.md
+
+          unexpected=$(git diff --cached --name-only | grep -vxE 'docs/(architecture|implementation-plan)\.md' || true)
+          if [ -n "$unexpected" ]; then
+            echo "Refusing to commit unexpected paths:"
+            echo "$unexpected"
+            exit 1
+          fi
 
           if git diff --cached --quiet; then
             echo "Codex did not create or change the architecture docs."
