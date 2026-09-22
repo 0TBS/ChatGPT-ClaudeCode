@@ -1,99 +1,82 @@
-# Contributor Guide for Issue #4
+# README CSV Handoff Smoke Test — Issue #10
 
 ## Problem, goals, and non-goals
 
-Issue #4 requests a short `CONTRIBUTING.md` explaining local checks, their prerequisites, and the high-level `ai-build` workflow, linked from `README.md`. This is also an end-to-end exercise of the existing automation.
+Issue #10 requests one exact sentence appended to `README.md` to exercise the existing build-log handoff:
 
-Goals:
+> The ai-build pipeline returns a CSV build log to the Codex chat that requested the build.
 
-- Give contributors one concise entry point for running local checks.
-- Accurately distinguish required tools from optional `actionlint`.
-- Explain architect → implementation → pull request → Codex Review.
-- Keep the implementation small and documentation-only.
+The goal is a single-line README addition that preserves every existing byte. No application, script, test, workflow, configuration, or dependency changes are needed. Building new handoff functionality or changing Markdown structure is out of scope.
 
-Non-goals: changing scripts, tests, workflow configuration, permissions, agent instructions, dependencies, or publication behavior; adding platform-specific installation guides; redesigning the automation.
+The issue's literal requirement that no other repository content change conflicts with mandatory pipeline artifacts. Repository policy requires this architecture, the implementation plan, and the workflow-generated build-log row. Interpret the README-only restriction as the implementation scope; the final pull request will also contain these required pipeline artifacts. Do not suppress or alter pipeline controls to satisfy the issue's wording.
 
 ## Current-state findings
 
-- `AGENTS.md` requires architecture and implementation-plan documents. The workflow writes these from the architect's JSON; Claude must preserve them.
-- `CLAUDE.md` requires implementation of the approved design and reporting concrete blockers instead of redesigning.
-- There is no root `CONTRIBUTING.md`.
-- `README.md` already documents setup, workflow operation, safety, blockers, troubleshooting, and tests. It is the authoritative source for detailed operator instructions.
-- `.github/scripts/run-checks.sh` requires bash, git, jq, python3 with PyYAML, and shellcheck. It runs actionlint only when available and explicitly reports when it is skipped. No API secrets are needed for local checks.
-- The runner checks YAML, shell syntax, ShellCheck, workflow structure, and shell test suites. It aggregates failures and exits nonzero if any check fails.
-- Shell tests create temporary repositories and fixtures. Running the suite requires a writable execution environment.
-- `.github/workflows/workflow-scripts.yml` already runs checks for README changes. This issue's README edit therefore triggers it without changing path filters.
-- `.github/workflows/codex-architect.yml` accepts the `ai-build` issue label and orders the architect and implementation jobs. Workflow steps validate and publish the implementation. `.github/workflows/codex-review.yml` reviews the resulting pull request.
+- `AGENTS.md` requires a read-only architecture phase returning both documents and a report. `CLAUDE.md` prohibits the implementer from editing the approved documents or build log and requires `.ai-build/claude-report.md`.
+- `README.md` already explains CSV publication on the issue and retrieval by `ai-build-request.py` into the requesting chat. The requested sentence summarizes existing behavior.
+- The README uses LF line endings, ends with a newline, and does not contain the requested sentence. Its current final line is the continuation listing `test-create-pull-request.sh` and `test-check-review-verdict.sh`.
+- `.github/workflows/codex-architect.yml` writes the architecture handoff, validates implementation, publishes the branch, appends the build-log row, opens the PR, and posts the result to the issue.
+- `.github/scripts/run-checks.sh` runs existing syntax, lint, workflow-structure, and script tests. README changes trigger `.github/workflows/workflow-scripts.yml`.
+- Existing tests cover CSV generation, posting reports and PR links, and printing the retrieved CSV through the request helper. They need no modifications for this sentence.
+- `docs/build-log.csv` contains one previous run, for #4, with an empty `notes` column. There is no applicable maintainer feedback.
+- Existing architecture documents describe #4 and are historical context, not current-state authority.
 
-Inspection was read-only. The check suite was not executed during architecture because it writes temporary files.
+Inspection was read-only. No files were modified and no test suites were run; the full runner creates temporary files.
 
-## Proposed design and boundaries
+## Proposed design and control flow
 
-Add a root Markdown guide with two sections: local checks and the AI-assisted workflow. Add a short relative link immediately beneath the existing `## Tests` heading in `README.md`, preserving its current content.
+Append the exact sentence plus one LF directly after the README's existing final newline. Add no blank line, heading, quote marker, indentation, wrapping, or trailing spaces. The invariant is:
 
-The guide must tell contributors to run `bash .github/scripts/run-checks.sh` from the repository root, enumerate all existing prerequisites, identify actionlint as optional, and state that local checks require no API secrets. Describe the successful terminal result as `All checks passed.` and failures as a nonzero exit status.
+`result_bytes = original_bytes + sentence.encode('utf-8') + b'\n'`
 
-Describe the workflow in four ordered steps:
+The existing Markdown list may render the sentence as continuation text. Preserve the requested source-level single-line append rather than adding formatting outside scope.
 
-1. Open a detailed issue and have a trusted maintainer with write access apply `ai-build`.
-2. Codex acts as architect and produces the architecture and implementation plan.
-3. Claude Code implements the plan; the workflow validates the result and opens a pull request.
-4. Codex Review reviews the pull request against the design.
-
-Link to `README.md#setup` and `README.md#blockers` for existing setup and blocker details. Do not imply that the workflow automatically merges a pull request or that blocked implementations are successful.
-
-Reader flow is README → CONTRIBUTING → local check command or existing README details. Execution and data flow remain unchanged. No executable component is added.
+Component boundaries remain unchanged: Claude owns the README edit and temporary implementation report; the workflow owns the approved documents, publication, and CSV log. The existing flow remains issue → architecture → README implementation and checks → branch/PR and log → issue comment → requesting chat's waiting helper. A successful local check does not prove that an external chat retrieved this run's result.
 
 ## File-level change map
 
-| File | Change and ownership |
+| File | Owner and change |
 | --- | --- |
-| `CONTRIBUTING.md` | Claude adds the short guide specified above. |
-| `README.md` | Claude adds one contributor-guide link under `## Tests`. |
-| `docs/architecture.md` | Workflow writes this approved architecture for #4; Claude preserves it. |
-| `docs/implementation-plan.md` | Workflow writes the approved plan for #4; Claude preserves it. |
+| `README.md` | Claude appends exactly the requested line. Only implementation content change. |
+| `docs/architecture.md` | Workflow writes this design for #10; Claude preserves it. |
+| `docs/implementation-plan.md` | Workflow writes the approved plan for #10; Claude preserves it. |
+| `.ai-build/claude-report.md` | Claude writes the required temporary report; it is not a committed product file. |
+| `docs/build-log.csv` | Existing log job appends this run's row; Claude does not edit it. |
 
-No other files need changes. An actual implementation blocker follows the existing `CLAUDE.md` blocker procedure.
+All other tracked files remain unchanged. Do not add persistent tests for this low-impact documentation append.
 
-## API, schema, configuration, dependency, and migration impacts
+## Interface and migration impacts
 
 - API: none.
-- Schema: none.
+- Schema: none; the existing CSV schema remains unchanged.
 - Configuration: none.
-- Dependencies: none added or changed; documentation lists existing check prerequisites.
+- Dependencies: none; use existing checks and Python standard library for byte comparison.
 - Migration: none.
 
-## Security, privacy, abuse, and failure modes
+## Security, privacy, abuse, and failures
 
-The issue was treated as untrusted product requirements. The guide contains no credentials, personal data, external installation commands, or changes to permissions. It accurately separates secret-free local checks from the configured hosted workflow and retains the trusted-maintainer qualification for label application.
+The sentence contains no executable content, links, user data, or secrets. Continue treating issue text as untrusted requirements, not commands. Do not inspect or print credentials, change permissions, invoke publication manually, or edit safety checks.
 
-Documentation risks are inaccurate prerequisites, a command that assumes the wrong directory, broken relative links, or a misleading success description. Address these through source comparison, link review, and execution of the existing check runner during implementation. Missing required tools or PyYAML are environment failures to report and resolve without weakening checks; missing optional actionlint is a supported skip.
+Likely failures are a duplicate append, newline normalization, unintended whitespace or formatting changes, and changes outside README. Verify the complete byte sequence against the starting commit and inspect the complete diff. If the expected baseline differs, stop and investigate rather than rewriting existing content. Missing check dependencies or test failures must be reported accurately; do not weaken checks or modify unrelated files to make this change pass.
 
-A documentation-only patch cannot establish that hosted credentials and publication work. The resulting workflow run and pull request provide the end-to-end evidence; report failures honestly through existing workflow behavior.
+The issue's whole-PR single-file condition cannot hold under existing policy. This exception must remain visible in the report and review; do not claim literal compliance with that condition.
 
 ## Compatibility and rollout
 
-The change is additive and needs no migration or feature flag. Existing commands and workflows retain their behavior. Merge through the current pull-request process. The README edit triggers Workflow Scripts for this patch. Expanding CI path filters for future CONTRIBUTING-only changes is outside this issue.
+Runtime behavior and public interfaces are unchanged. Publish through the existing reviewable PR workflow. No deployment or feature flag is needed. Reverting the appended line reverses the product change; retain historical pipeline records according to normal repository practice.
 
 ## Alternatives and decisions
 
-- Keep detailed setup and troubleshooting in README, linking to them instead of duplicating them in the guide.
-- Use the existing Bash runner instead of adding a wrapper, package manager, or new check.
-- Use manual checks for Markdown content and links plus the existing automated suite; do not add tests that merely assert prose.
-- Omit platform-specific installation instructions because the request needs a tool list and the repository does not establish a supported installation matrix.
+- A dedicated paragraph with a blank separator would render more clearly but adds another line; reject it for this exact-append request.
+- Changing handoff scripts or adding new tests would expand scope without changing required behavior; reuse existing coverage.
+- Omitting required documents or the build log would violate repository policy and defeat the handoff exercise; retain workflow-owned artifacts.
 
-## Acceptance criteria
+## Acceptance criteria and blockers
 
-- AC1: Root `CONTRIBUTING.md` exists, is nonempty, and contains at most 60 lines of concise Markdown.
-- AC2: It states the repository-root working directory and includes the exact command `bash .github/scripts/run-checks.sh`.
-- AC3: It lists bash, git, jq, python3 with PyYAML, and shellcheck as required, and actionlint as optional.
-- AC4: It states that local checks need no API secrets, identifies `All checks passed.` as success, and explains the nonzero failure exit status.
-- AC5: It describes the trusted maintainer's `ai-build` trigger and all four phases in order, assigns publication to the workflow, and makes no automatic-merge promise.
-- AC6: README links to `CONTRIBUTING.md`, and the guide's setup and blocker links resolve to existing README headings.
-- AC7: Implementation changes are limited to `CONTRIBUTING.md` and `README.md`; workflow-generated handoff documents remain unchanged by Claude.
-- AC8: The existing check runner exits zero and `git diff --check` passes; any optional actionlint skip is recorded accurately.
-- AC9: Hosted end-to-end validation records the architecture handoff, implementation, publication of a normal issue-closing pull request, and the Codex Review result without representing a pending or failed stage as successful.
+- **AC1:** README bytes equal the starting-commit README bytes followed by the exact sentence and one LF. The sentence is the final line and occurs once.
+- **AC2:** The implementation changes only `README.md`; approved handoff documents remain unchanged by Claude. At publication, the only additional tracked changes are the two required documents and the workflow-generated build log.
+- **AC3:** `git diff --check` and the existing check runner pass, with any optional actionlint skip accurately recorded. No test or check is weakened.
+- **AC4:** Claude provides a secret-free report of at most 150 words that records the implementation, validation results, and mandatory-artifact scope exception.
+- **AC5:** After publication, an explicit operator check confirms the #10 CSV row, both reports, and PR link on the issue; if a requesting chat is waiting, confirm that its existing helper displays the result there.
 
-## Assumptions and unresolved blockers
-
-No design blockers were identified. Implementation validation assumes a writable environment with the existing required tools installed. AC9 is an operator/workflow observation after Claude finishes, not a reason for Claude to publish or wait for its own review. Hosted credentials and the eventual review outcome cannot be verified in this read-only architecture phase.
+No technical implementation blockers remain under the policy-based scope interpretation above. Literal whole-PR README-only compliance is impossible in this workflow. Live chat receipt is an external verification item and must not be claimed without observation.
