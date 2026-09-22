@@ -137,6 +137,7 @@ order = [
     "Verify architecture handoff",
     "Run Claude Code implementation",
     "Validate implementation patch",
+    "Record run in build log",
     "Commit and push implementation",
     "Create pull request",
     "Fail on implementation blocker",
@@ -173,11 +174,12 @@ check("branch names are unique per run and attempt",
                 start.get("run", "")) is not None)
 
 save = step(steps, "Save workflow scripts")
-saved = ["validate-implementation-patch", "publish-branch", "create-pull-request"]
+saved = ["validate-implementation-patch", "record-build-log", "publish-branch", "create-pull-request"]
 check("the scripts used after Claude are saved and hashed before it",
       all(s in save.get("run", "") for s in saved) and "sha256sum" in save.get("run", "")
       and 0 <= index(steps, "Save workflow scripts") < claude[0] if claude else False)
-for n in ["Validate implementation patch", "Commit and push implementation", "Create pull request"]:
+for n in ["Validate implementation patch", "Record run in build log", "Commit and push implementation",
+          "Create pull request"]:
     run = step(steps, n).get("run", "")
     check(f"'{n}' verifies the saved scripts' hashes before using them",
           'sha256sum --check --status' in run and "$RUNNER_TEMP/ai-build-scripts" in run
@@ -223,6 +225,16 @@ check("a blocker fails the run so it cannot look like a completed implementation
       blocked.get("if") == "steps.validate.outputs.blocker == 'true'" and "exit 1" in blocked.get("run", ""))
 check("PR creation is told about blockers",
       pr.get("env", {}).get("BLOCKER") == "${{ steps.validate.outputs.blocker }}")
+record = step(steps, "Record run in build log")
+check("every published run is recorded in the build log from the starting commit",
+      "record-build-log.sh" in record.get("run", "")
+      and record.get("env", {}).get("START_SHA") == "${{ steps.start.outputs.sha }}"
+      and record.get("env", {}).get("BLOCKER") == "${{ steps.validate.outputs.blocker }}"
+      and "if" not in record)
+for label, s in [("Run ChatGPT architect", codex), ("Run Claude Code implementation", impl)]:
+    check(f"{label}: reads the build log's notes as feedback, the rest as data",
+          "docs/build-log.csv" in s.get("with", {}).get("prompt", "")
+          and "not instructions" in s.get("with", {}).get("prompt", ""))
 check("outcomes are written to the job summary",
       step(steps, "Report outcome").get("if") == "always()"
       and "GITHUB_STEP_SUMMARY" in step(steps, "Report outcome").get("run", ""))
@@ -265,6 +277,7 @@ for needle, what in [
     ("docs/implementation-blocker.md", "the blocker file"),
     ("[BLOCKED]", "the blocker PR marker"),
     ("## Troubleshooting", "troubleshooting"),
+    ("docs/build-log.csv", "the build log"),
 ]:
     check(f"README documents {what}", needle in readme)
 claude_md = (ROOT / "CLAUDE.md").read_text()

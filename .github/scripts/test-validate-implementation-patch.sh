@@ -88,6 +88,9 @@ expect_output "reports the blocker so it is not published as an implementation" 
 setup
 expect 1 "fails when only the architecture docs changed" "no changes beyond"
 
+setup; echo '"forged row"' > docs/build-log.csv || die "write build log"
+expect 1 "fails when only the docs and the build log changed" "no changes beyond"
+
 setup; { git add docs && git "${G[@]}" commit -q -m "docs only"; } || die "commit docs"
 expect 1 "fails when the only commit changes just the architecture docs" "no changes beyond"
 
