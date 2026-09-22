@@ -7,7 +7,8 @@
 #   - the repository is no longer on the expected issue branch;
 #   - either architecture handoff document is missing or empty;
 #   - the change has whitespace errors, in commits or in the working tree;
-#   - nothing changed apart from the two architecture documents.
+#   - nothing changed apart from the two architecture documents and the
+#     build log (which the workflow rewrites afterwards).
 #
 # A docs/implementation-blocker.md counts as a change, so a blocker still
 # reaches review, but it is reported as a blocker, never as a completed
@@ -38,7 +39,7 @@ git add --all
 git diff --cached --check "$start" || fail "The change has whitespace errors."
 
 changed=$(git diff --cached --name-only "$start")
-implementation=$(printf '%s\n' "$changed" | grep -vxE 'docs/(architecture|implementation-plan)\.md' | grep -v '^$' || true)
+implementation=$(printf '%s\n' "$changed" | grep -vxE 'docs/(architecture\.md|implementation-plan\.md|build-log\.csv)' | grep -v '^$' || true)
 
 if [ -z "$implementation" ]; then
   fail "Claude Code produced no changes beyond the architecture documents."

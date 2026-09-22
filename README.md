@@ -55,6 +55,7 @@ permission to create pull requests.
    - validates everything changed since the starting commit, including new files and
      any commits an agent made, and rejects whitespace errors or a patch that changes
      only the two documents;
+   - adds a row for the run to `docs/build-log.csv` (see [Build log](#build-log));
    - commits whatever is left uncommitted, pushes the branch, and opens a pull
      request that closes the issue. If a pull request for the branch is already
      open, it is reused rather than duplicated.
@@ -66,6 +67,38 @@ permission to create pull requests.
 The prompts live in `.github/workflows/codex-architect.yml` and
 `.github/workflows/codex-review.yml`. Durable role constraints live in `AGENTS.md`
 for the architect and `CLAUDE.md` for the implementer.
+
+## Build log
+
+`docs/build-log.csv` has one row per ai-build run that reached a pull request,
+committed as part of that pull request. It opens in Excel or Google Sheets.
+
+| Column | What it holds |
+| --- | --- |
+| `date_utc` | When the run finished, in UTC. |
+| `issue`, `issue_title` | The triggering issue. |
+| `outcome` | `implemented`, or `blocked` for a [blocker](#blockers). |
+| `architecture_title` | The first heading of the architect's design. |
+| `files_changed`, `lines_added`, `lines_removed`, `changed_files` | The whole change, design documents included, measured from the starting commit. |
+| `agent_commits` | Commits the agents made themselves (normally 0). |
+| `branch`, `run_url` | Where to find the branch and the run's logs. |
+| `notes` | Left empty for you. |
+
+Write what went well or badly in `notes`, and commit it to the default branch.
+Codex and Claude read the notes on every later run and apply the lessons that bear
+on the new issue, so this is how you improve the pipeline's results. You can add
+your own columns after `notes`; new rows are padded to match. Do not rename, reorder
+or remove the standard columns: the run fails if the first columns of the header
+change.
+
+The workflow rebuilds the log from the starting commit before adding its row, so an
+agent cannot rewrite earlier rows. Values that a spreadsheet would treat as a
+formula are prefixed with `'`, since issue titles are untrusted.
+
+Runs that fail before a pull request opens are not in the log; see the run's
+summary page. Two pull requests open at once both add a row at the end of the file,
+so the second to merge conflicts there: keep both rows. `.gitattributes` makes
+local `git merge` keep both automatically.
 
 ## Blockers
 
@@ -106,6 +139,7 @@ redirect the push or run code while the pull-request token is present.
 | `already exists on the remote` | A branch with this name exists. Rerun the workflow; each attempt uses a new name. |
 | `Codex Review` fails with `did not end with APPROVED or CHANGES_REQUESTED` | Codex did not give a verdict on the last line. Re-run the review. |
 | The run fails with an implementation blocker | See [Blockers](#blockers). |
+| `The first line of docs/build-log.csv must start with: …` | The log's standard columns were renamed or reordered. Restore them (add new columns only after `notes`), then relabel. |
 
 Each run writes a summary table (handoff, implementation, validation, pull request,
 blocker) to the run's summary page.
@@ -125,5 +159,6 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for local prerequisites and the contribut
   review publication, and that this README matches the workflow;
 - script suites: `test-prepare-issue-context.sh`, `test-write-handoff-docs.sh`,
   `test-check-architect-boundary.sh`,
-  `test-validate-implementation-patch.sh`, `test-publish-branch.sh`,
+  `test-validate-implementation-patch.sh`, `test-record-build-log.sh`,
+  `test-publish-branch.sh`,
   `test-create-pull-request.sh` and `test-check-review-verdict.sh`.

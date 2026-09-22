@@ -1,0 +1,2 @@
+date_utc,issue,issue_title,outcome,architecture_title,files_changed,lines_added,lines_removed,agent_commits,changed_files,branch,run_url,notes
+"2026-09-22T21:17:43Z","4","Add a CONTRIBUTING.md","implemented","Contributor Guide for Issue #4","4","240","222","0","CONTRIBUTING.md; README.md; docs/architecture.md; docs/implementation-plan.md","ai/issue-4-35785377703-1","https://github.com/0TBS/ChatGPT-ClaudeCode/actions/runs/35785377703",""
