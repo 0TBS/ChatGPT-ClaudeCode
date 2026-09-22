@@ -34,14 +34,15 @@ permission to create pull requests.
 1. Open a detailed issue describing the desired behavior, constraints, and examples.
 2. Apply the `ai-build` label. It is the only supported trigger; other labels and
    other events do nothing.
-3. The `ChatGPT Architect to Claude Code` workflow runs two jobs.
+3. The `ChatGPT Architect to Claude Code` workflow runs three jobs.
 
    The **architect** job:
    - records the commit it started from;
    - copies the issue into `.ai-build/issue.json` (never committed) as untrusted
      data;
    - runs Codex read-only, as the job's last step, and has it return the contents
-     of `docs/architecture.md` and `docs/implementation-plan.md` as JSON.
+     of `docs/architecture.md` and `docs/implementation-plan.md`, and a short
+     report on its design, as JSON.
 
    The **implement** job then starts on a fresh runner, from the same commit, and:
    - creates a branch named `ai/issue-<number>-<run>-<attempt>`, unique for every
@@ -51,14 +52,18 @@ permission to create pull requests.
      `#<number>`, and nothing else in the repository changed. Claude does not run
      if this fails;
    - asks Claude Code to implement and test that plan without changing the two
-     documents;
+     documents, and to write a short report on what it did to
+     `.ai-build/claude-report.md`;
    - validates everything changed since the starting commit, including new files and
      any commits an agent made, and rejects whitespace errors or a patch that changes
      only the two documents;
-   - adds a row for the run to `docs/build-log.csv` (see [Build log](#build-log));
-   - commits whatever is left uncommitted, pushes the branch, and opens a pull
-     request that closes the issue. If a pull request for the branch is already
-     open, it is reused rather than duplicated.
+   - commits whatever is left uncommitted and pushes the branch.
+
+   The **log** job then starts on a fresh runner where no agent ran, and:
+   - adds a row for the run, with both agents' reports, to `docs/build-log.csv`
+     (see [Build log](#build-log)) and pushes it to the branch;
+   - opens a pull request that closes the issue. If a pull request for the branch
+     is already open, it is reused rather than duplicated.
 4. The `Codex Review` workflow reviews the pull request against the architecture,
    posts the review as a pull-request comment, and passes only when the review's
    final line is exactly `APPROVED`. `CHANGES_REQUESTED`, anything else, or a review
@@ -82,9 +87,12 @@ committed as part of that pull request. It opens in Excel or Google Sheets.
 | `files_changed`, `lines_added`, `lines_removed`, `changed_files` | The whole change, design documents included, measured from the starting commit. |
 | `agent_commits` | Commits the agents made themselves (normally 0). |
 | `branch`, `run_url` | Where to find the branch and the run's logs. |
+| `codex_report` | Codex's report on its design: key decisions, risks, open questions, and suggested improvements. |
+| `claude_report` | Claude's report on its implementation: what it built, the checks it ran and their results, problems, and suggested improvements. |
 | `notes` | Left empty for you. |
 
-Write what went well or badly in `notes`, and commit it to the default branch.
+Each report is at most 2000 bytes, on one line. Write what went well or badly in
+`notes`, and commit it to the default branch.
 Codex and Claude read the notes on every later run and apply the lessons that bear
 on the new issue, so this is how you improve the pipeline's results. You can add
 your own columns after `notes`; new rows are padded to match. Do not rename, reorder
@@ -93,7 +101,8 @@ change.
 
 The workflow rebuilds the log from the starting commit before adding its row, so an
 agent cannot rewrite earlier rows. Values that a spreadsheet would treat as a
-formula are prefixed with `'`, since issue titles are untrusted.
+formula are prefixed with `'`, since issue titles and the agents' reports are
+untrusted.
 
 Runs that fail before a pull request opens are not in the log; see the run's
 summary page. Two pull requests open at once both add a row at the end of the file,
@@ -118,7 +127,10 @@ timeout, and Claude Code has a turn limit.
 
 Codex runs read-only in a job of its own, with only read access to the repository,
 and hands over nothing but its JSON answer, so no process or file it leaves behind
-can reach Claude, the push, or the pull-request token. The scripts that run after
+can reach Claude, the push, or the pull-request token. `AI_BUILD_TOKEN` is used only
+in the log job, which runs no agent, takes its scripts from the starting commit
+rather than the agent-written branch, and receives Claude's report only as base64
+text. The scripts that run after
 Claude are copied out of the workspace and hashed before it starts, and every later
 step verifies those hashes. The branch
 is pushed from a fresh repository to an explicit URL, and the pull request is
@@ -139,6 +151,7 @@ redirect the push or run code while the pull-request token is present.
 | `already exists on the remote` | A branch with this name exists. Rerun the workflow; each attempt uses a new name. |
 | `Codex Review` fails with `did not end with APPROVED or CHANGES_REQUESTED` | Codex did not give a verdict on the last line. Re-run the review. |
 | The run fails with an implementation blocker | See [Blockers](#blockers). |
+| `Claude Code wrote no report` warning, or an empty report column | The agent skipped its report. The run still completes; say so in `notes` if it keeps happening. |
 | `The first line of docs/build-log.csv must start with: …` | The log's standard columns were renamed or reordered. Restore them (add new columns only after `notes`), then relabel. |
 
 Each run writes a summary table (handoff, implementation, validation, pull request,

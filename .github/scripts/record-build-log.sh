@@ -1,19 +1,22 @@
 #!/usr/bin/env bash
 # Appends one row describing this ai-build run to docs/build-log.csv and
-# stages it, so the row is published with the run's change. Maintainers fill
-# in the notes column afterwards; both agents read those notes on later runs.
+# stages it, so the row is published with the run's change. The row carries
+# a short report from each agent (Codex's on the design, Claude's on the
+# implementation). Maintainers fill in the notes column afterwards; both
+# agents read those notes on later runs.
 #
 # The log is rebuilt from the starting commit before the row is added, so an
 # agent cannot rewrite earlier rows or forge one. Columns maintainers add
 # after the standard ones are kept: the new row is padded to match.
 #
 # Every value is quoted, and values that a spreadsheet would run as a formula
-# (starting with = + - @) are prefixed with a quote, because the issue title
-# and the architecture heading are untrusted text.
+# (starting with = + - @) are prefixed with a quote, because the issue title,
+# the architecture heading and the reports are untrusted text. Each report is
+# cut to 2000 bytes of valid UTF-8.
 #
 # Env: ISSUE_NUMBER, BRANCH, and optionally ISSUE_TITLE, BLOCKER (true|false),
-#      AGENT_COMMITS, GITHUB_SERVER_URL, GITHUB_REPOSITORY, GITHUB_RUN_ID,
-#      GITHUB_STEP_SUMMARY.
+#      AGENT_COMMITS, CODEX_REPORT, CLAUDE_REPORT, GITHUB_SERVER_URL,
+#      GITHUB_REPOSITORY, GITHUB_RUN_ID, GITHUB_STEP_SUMMARY.
 # Usage: record-build-log.sh <start-sha>
 set -euo pipefail
 
@@ -25,10 +28,10 @@ for name in ISSUE_NUMBER BRANCH; do
 done
 
 log=docs/build-log.csv
-columns=date_utc,issue,issue_title,outcome,architecture_title,files_changed,lines_added,lines_removed,agent_commits,changed_files,branch,run_url,notes
+columns=date_utc,issue,issue_title,outcome,architecture_title,files_changed,lines_added,lines_removed,agent_commits,changed_files,branch,run_url,codex_report,claude_report,notes
 
-# In this (agent-touched) repository: hooks, fsmonitor, external diff
-# drivers and textconv off.
+# The files were written by agents: hooks, fsmonitor, external diff drivers
+# and textconv stay off.
 g() { git -c core.hooksPath=/dev/null -c core.fsmonitor=false "$@"; }
 
 # CSV field: one line, formula-safe, always quoted.
@@ -38,6 +41,9 @@ field() {
   case "$v" in [=+@-]*) v="'$v" ;; esac
   printf '"%s"' "${v//\"/\"\"}"
 }
+
+# At most 2000 bytes, dropping any character cut in half.
+report() { printf '%s' "$1" | head -c 2000 | iconv -c -f UTF-8 -t UTF-8 2>/dev/null || true; }
 
 # Start from the log as it was before the agents ran.
 mkdir -p docs
@@ -81,7 +87,8 @@ fi
 row=$(
   printf '%s' "$(field "$(date -u +%Y-%m-%dT%H:%M:%SZ)")"
   for v in "$ISSUE_NUMBER" "${ISSUE_TITLE:-}" "$outcome" "$arch_title" "${#files[@]}" \
-           "$added" "$removed" "${AGENT_COMMITS:-0}" "$changed_files" "$BRANCH" "$run_url" ""; do
+           "$added" "$removed" "${AGENT_COMMITS:-0}" "$changed_files" "$BRANCH" "$run_url" \
+           "$(report "${CODEX_REPORT:-}")" "$(report "${CLAUDE_REPORT:-}")" ""; do
     printf ',%s' "$(field "$v")"
   done
   for ((i = 0; i < extra; i++)); do printf ','; done

@@ -55,7 +55,7 @@ def dump(obj):
 UNTRUSTED = re.compile(
     r"\$\{\{\s*github\.(event\.(issue\.(title|body)|pull_request\.(title|body|head\.ref)"
     r"|comment\.body|review\.body)|head_ref)"
-    r"|\$\{\{\s*needs\.architect\.outputs\.handoff"
+    r"|\$\{\{\s*needs\.(architect\.outputs\.handoff|implement\.outputs\.claude_report_b64)"
 )
 PINNED = re.compile(r"^\s*(-\s+)?uses:\s+[\w.-]+/[\w./-]+@[0-9a-f]{40} # v\d+(\.\d+)*\s*$")
 
@@ -82,10 +82,12 @@ build = load("codex-architect.yml")
 jobs = build["jobs"]
 arch = jobs.get("architect", {})
 impl_job = jobs.get("implement", {})
+log_job = jobs.get("log", {})
 asteps = arch.get("steps", [])
 steps = impl_job.get("steps", [])
+lsteps = log_job.get("steps", [])
 
-check("ai-build has an architect job and an implement job", list(jobs) == ["architect", "implement"])
+check("ai-build has architect, implement and log jobs", list(jobs) == ["architect", "implement", "log"])
 check("triggered only by an issue being labeled", build["on"] == {"issues": {"types": ["labeled"]}})
 check("the architect job runs only for the ai-build label",
       arch.get("if") == "github.event.label.name == 'ai-build'")
@@ -114,11 +116,11 @@ try:
     schema = json.loads(cwith.get("output-schema", ""))
 except ValueError:
     schema = {}
-check("Codex returns both documents through a strict output schema",
+check("Codex returns both documents and its report through a strict output schema",
       schema.get("additionalProperties") is False
-      and sorted(schema.get("required", [])) == ["architecture_md", "implementation_plan_md"]
+      and sorted(schema.get("required", [])) == ["architecture_md", "implementation_plan_md", "report"]
       and all(schema.get("properties", {}).get(k, {}).get("type") == "string"
-              for k in ("architecture_md", "implementation_plan_md")))
+              for k in ("architecture_md", "implementation_plan_md", "report")))
 check("the architect checkout keeps no credentials",
       step(asteps, "Checkout repository").get("with", {}).get("persist-credentials") is False)
 check("the architect job hands over only its starting commit and Codex's output",
@@ -127,7 +129,8 @@ check("the architect job hands over only its starting commit and Codex's output"
 
 # Implement job.
 check("build token cannot write issues or PRs (the PR uses AI_BUILD_TOKEN)",
-      impl_job.get("permissions") == {"contents": "write", "issues": "read", "pull-requests": "read"})
+      impl_job.get("permissions") == {"contents": "write", "issues": "read", "pull-requests": "read"}
+      and log_job.get("permissions") == {"contents": "write", "issues": "read", "pull-requests": "read"})
 order = [
     "Checkout repository",
     "Create issue branch",
@@ -137,10 +140,8 @@ order = [
     "Verify architecture handoff",
     "Run Claude Code implementation",
     "Validate implementation patch",
-    "Record run in build log",
+    "Collect Claude report",
     "Commit and push implementation",
-    "Create pull request",
-    "Fail on implementation blocker",
     "Report outcome",
 ]
 positions = [index(steps, n) for n in order]
@@ -174,12 +175,11 @@ check("branch names are unique per run and attempt",
                 start.get("run", "")) is not None)
 
 save = step(steps, "Save workflow scripts")
-saved = ["validate-implementation-patch", "record-build-log", "publish-branch", "create-pull-request"]
+saved = ["validate-implementation-patch", "publish-branch"]
 check("the scripts used after Claude are saved and hashed before it",
       all(s in save.get("run", "") for s in saved) and "sha256sum" in save.get("run", "")
       and 0 <= index(steps, "Save workflow scripts") < claude[0] if claude else False)
-for n in ["Validate implementation patch", "Record run in build log", "Commit and push implementation",
-          "Create pull request"]:
+for n in ["Validate implementation patch", "Commit and push implementation"]:
     run = step(steps, n).get("run", "")
     check(f"'{n}' verifies the saved scripts' hashes before using them",
           'sha256sum --check --status' in run and "$RUNNER_TEMP/ai-build-scripts" in run
@@ -200,15 +200,18 @@ check("Claude is explicitly allowed Bash, so it can run checks", "--allowedTools
 check("Claude authenticates with the job token, not the GitHub App/OIDC",
       impl.get("with", {}).get("github_token") == "${{ github.token }}")
 
-token_steps = [s.get("name") for j in jobs.values() for s in j.get("steps", []) if "AI_BUILD_TOKEN" in dump(s)]
-check("AI_BUILD_TOKEN is used only by the secrets check and PR creation",
-      token_steps == ["Check required secrets", "Create pull request"])
-pr = step(steps, "Create pull request")
+token_steps = [(j_id, s.get("name")) for j_id, j in jobs.items() for s in j.get("steps", [])
+               if "AI_BUILD_TOKEN" in dump(s)]
+check("AI_BUILD_TOKEN is used only by the secrets check and PR creation in the log job",
+      token_steps == [("architect", "Check required secrets"), ("log", "Create pull request")])
+pr = step(lsteps, "Create pull request")
 check("the pull request is opened with AI_BUILD_TOKEN",
       pr.get("env", {}).get("GH_TOKEN") == "${{ secrets.AI_BUILD_TOKEN }}")
 check("PR creation runs outside the checkout", pr.get("working-directory") == "${{ runner.temp }}")
 check("PR creation goes through the idempotent script",
       "create-pull-request.sh" in pr.get("run", "") and "gh pr create" not in pr.get("run", ""))
+check("PR creation runs the trusted copy of the script",
+      "$GITHUB_WORKSPACE/trusted/.github/scripts/create-pull-request.sh" in pr.get("run", ""))
 check("publication goes through the script that tolerates agent commits",
       "publish-branch.sh" in step(steps, "Commit and push implementation").get("run", "")
       and "git commit" not in step(steps, "Commit and push implementation").get("run", ""))
@@ -220,17 +223,55 @@ check("validation measures from the recorded starting commit",
 check("validation fails if Claude changed the approved architecture documents",
       "DOCS_SHA256" in validate.get("run", ""))
 
-blocked = step(steps, "Fail on implementation blocker")
+blocked = step(lsteps, "Fail on implementation blocker")
 check("a blocker fails the run so it cannot look like a completed implementation",
-      blocked.get("if") == "steps.validate.outputs.blocker == 'true'" and "exit 1" in blocked.get("run", ""))
+      blocked.get("if") == "needs.implement.outputs.blocker == 'true'" and "exit 1" in blocked.get("run", ""))
 check("PR creation is told about blockers",
-      pr.get("env", {}).get("BLOCKER") == "${{ steps.validate.outputs.blocker }}")
-record = step(steps, "Record run in build log")
-check("every published run is recorded in the build log from the starting commit",
-      "record-build-log.sh" in record.get("run", "")
-      and record.get("env", {}).get("START_SHA") == "${{ steps.start.outputs.sha }}"
-      and record.get("env", {}).get("BLOCKER") == "${{ steps.validate.outputs.blocker }}"
-      and "if" not in record)
+      pr.get("env", {}).get("BLOCKER") == "${{ needs.implement.outputs.blocker }}")
+check("the implement job hands the log job its branch, pushed commit, blocker and Claude's report",
+      impl_job.get("outputs") == {
+          "branch": "${{ steps.start.outputs.branch }}",
+          "head": "${{ steps.publish.outputs.head }}",
+          "blocker": "${{ steps.validate.outputs.blocker }}",
+          "agent_commits": "${{ steps.validate.outputs.agent_commits }}",
+          "claude_report_b64": "${{ steps.report.outputs.claude_report_b64 }}"})
+collect = step(steps, "Collect Claude report").get("run", "")
+check("Claude's report leaves its job only as base64, and never through a symlink",
+      "base64 -w0" in collect and "claude_report_b64=" in collect and "[ ! -L" in collect)
+# Log job: no agent runs, trusted scripts, then the log, then the PR.
+check("the log job runs after both agent jobs succeed",
+      log_job.get("needs") == ["architect", "implement"] and "if" not in log_job)
+check("no agent runs in the log job",
+      not any(str(s.get("uses", "")).startswith(("openai/", "anthropics/")) for s in lsteps))
+check("log job order: trusted scripts, implementation, log, push, PR, blocker",
+      [s.get("name") for s in lsteps] == ["Checkout trusted scripts", "Checkout implementation",
+                                          "Record run in build log", "Push build log",
+                                          "Create pull request", "Fail on implementation blocker"])
+trusted = step(lsteps, "Checkout trusted scripts").get("with", {})
+check("the log job's scripts come from the starting commit, without credentials",
+      trusted.get("ref") == "${{ needs.architect.outputs.start_sha }}" and trusted.get("path") == "trusted"
+      and trusted.get("persist-credentials") is False)
+work = step(lsteps, "Checkout implementation").get("with", {})
+check("the log job checks out exactly the pushed implementation",
+      work.get("ref") == "${{ needs.implement.outputs.head }}" and work.get("path") == "work")
+record = step(lsteps, "Record run in build log")
+renv = record.get("env", {})
+check("the build log is rebuilt from the starting commit by the trusted script, on the pushed commit",
+      "$GITHUB_WORKSPACE/trusted/.github/scripts/record-build-log.sh" in record.get("run", "")
+      and renv.get("START_SHA") == "${{ needs.architect.outputs.start_sha }}"
+      and 'git rev-parse HEAD)" != "$HEAD_SHA"' in record.get("run", "")
+      and renv.get("BLOCKER") == "${{ needs.implement.outputs.blocker }}")
+check("both agents' reports reach the build log only through env",
+      renv.get("HANDOFF") == "${{ needs.architect.outputs.handoff }}"
+      and renv.get("CLAUDE_REPORT_B64") == "${{ needs.implement.outputs.claude_report_b64 }}"
+      and "CODEX_REPORT" in record.get("run", "") and "base64 -d" in record.get("run", ""))
+check("the build-log push never forces",
+      "git push" in step(lsteps, "Push build log").get("run", "")
+      and "--force" not in step(lsteps, "Push build log").get("run", "")
+      and "+HEAD" not in step(lsteps, "Push build log").get("run", ""))
+check("Codex is asked for a report", "report:" in codex.get("with", {}).get("prompt", ""))
+check("Claude is asked for a report in .ai-build/claude-report.md",
+      ".ai-build/claude-report.md" in impl.get("with", {}).get("prompt", ""))
 for label, s in [("Run ChatGPT architect", codex), ("Run Claude Code implementation", impl)]:
     check(f"{label}: reads the build log's notes as feedback, the rest as data",
           "docs/build-log.csv" in s.get("with", {}).get("prompt", "")

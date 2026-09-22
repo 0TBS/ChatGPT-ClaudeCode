@@ -53,6 +53,12 @@ ok=0; [ "$rc" -eq 0 ] && remote_has && [ "$(remote_files)" = "README.md feature.
   [ "$(git --git-dir="$root/remote" log -1 --format=%s "refs/heads/$BRANCH")" = "Implement issue #7" ] && ok=1
 check "commits the staged change and pushes the branch" "$ok"
 
+setup; rm -f "$root/output"
+GITHUB_OUTPUT="$root/output" publish; rc=$?
+ok=0; [ "$rc" -eq 0 ] &&
+  [ "$(cat "$root/output")" = "head=$(git --git-dir="$root/remote" rev-parse "refs/heads/$BRANCH")" ] && ok=1
+check "reports the pushed commit as the head output" "$ok"
+
 setup; git "${G[@]}" commit -q -m "claude committed" || die "agent commit"
 publish; rc=$?
 ok=0; [ "$rc" -eq 0 ] && remote_has &&

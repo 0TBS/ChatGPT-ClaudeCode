@@ -72,9 +72,10 @@ jobs:
               "type": "object",
               "properties": {
                 "architecture_md": { "type": "string" },
-                "implementation_plan_md": { "type": "string" }
+                "implementation_plan_md": { "type": "string" },
+                "report": { "type": "string" }
               },
-              "required": ["architecture_md", "implementation_plan_md"],
+              "required": ["architecture_md", "implementation_plan_md", "report"],
               "additionalProperties": false
             }
           prompt: |
@@ -98,6 +99,11 @@ jobs:
 
             - architecture_md: the full content of docs/architecture.md
             - implementation_plan_md: the full content of docs/implementation-plan.md
+            - report: your report for the build log, in at most 150 words of plain
+              text: the key design decisions, risks and open questions, and
+              anything that would improve the issue, these instructions, or the
+              pipeline. It is published in docs/build-log.csv; never include
+              secrets.
 
             The workflow writes these files and fails the run if either document
             is empty or does not identify the issue.
@@ -134,12 +140,19 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
 
-    # contents: write pushes the issue branch. The pull request is opened with
-    # AI_BUILD_TOKEN, so this token needs only read access to issues and PRs.
+    # contents: write pushes the issue branch. The pull request is opened by
+    # the log job, so this job never holds AI_BUILD_TOKEN.
     permissions:
       contents: write
       issues: read
       pull-requests: read
+
+    outputs:
+      branch: ${{ steps.start.outputs.branch }}
+      head: ${{ steps.publish.outputs.head }}
+      blocker: ${{ steps.validate.outputs.blocker }}
+      agent_commits: ${{ steps.validate.outputs.agent_commits }}
+      claude_report_b64: ${{ steps.report.outputs.claude_report_b64 }}
 
     steps:
       - name: Checkout repository
@@ -176,7 +189,7 @@ jobs:
         run: |
           dir="$RUNNER_TEMP/ai-build-scripts"
           mkdir -p "$dir"
-          for s in validate-implementation-patch record-build-log publish-branch create-pull-request; do
+          for s in validate-implementation-patch publish-branch; do
             cp ".github/scripts/$s.sh" "$dir/"
           done
           (cd "$dir" && sha256sum ./*.sh > MANIFEST)
@@ -256,6 +269,12 @@ jobs:
             every acceptance criterion against the plan's validation matrix. Leave a
             clean, reviewable working-tree patch for the workflow to commit.
 
+            Last, write your report for the build log to .ai-build/claude-report.md,
+            in at most 150 words of plain text: what you implemented, the checks you
+            ran and their results, any problems, and anything that would improve the
+            plan, these instructions, or the pipeline. It is published in
+            docs/build-log.csv; never include secrets.
+
       - name: Validate implementation patch
         id: validate
         env:
@@ -273,24 +292,22 @@ jobs:
           fi
           bash "$d/validate-implementation-patch.sh" "$START_SHA" "$BRANCH"
 
-      # One row per run in docs/build-log.csv, published with the change.
-      # Rebuilt from the starting commit, so Claude's edits to it are dropped.
-      - name: Record run in build log
-        env:
-          SCRIPTS_SHA256: ${{ steps.scripts.outputs.manifest_sha256 }}
-          START_SHA: ${{ steps.start.outputs.sha }}
-          BRANCH: ${{ steps.start.outputs.branch }}
-          ISSUE_NUMBER: ${{ github.event.issue.number }}
-          ISSUE_TITLE: ${{ github.event.issue.title }}
-          BLOCKER: ${{ steps.validate.outputs.blocker }}
-          AGENT_COMMITS: ${{ steps.validate.outputs.agent_commits }}
+      # Claude's report reaches the log job only as base64 in a job output,
+      # so no text it wrote is parsed as an output or a command.
+      - name: Collect Claude report
+        id: report
         run: |
-          d="$RUNNER_TEMP/ai-build-scripts"
-          echo "$SCRIPTS_SHA256  $d/MANIFEST" | sha256sum --check --status
-          (cd "$d" && sha256sum --check --status MANIFEST)
-          bash "$d/record-build-log.sh" "$START_SHA"
+          f=.ai-build/claude-report.md
+          report=
+          if [ ! -L .ai-build ] && [ -f "$f" ] && [ ! -L "$f" ]; then
+            report=$(head -c 8000 "$f" | base64 -w0)
+          else
+            echo "::warning::Claude Code wrote no report to $f."
+          fi
+          echo "claude_report_b64=$report" >> "$GITHUB_OUTPUT"
 
       - name: Commit and push implementation
+        id: publish
         env:
           GITHUB_TOKEN: ${{ github.token }}
           SCRIPTS_SHA256: ${{ steps.scripts.outputs.manifest_sha256 }}
@@ -309,44 +326,13 @@ jobs:
           fi
           bash "$d/publish-branch.sh" "$START_SHA" "$BRANCH" "$message"
 
-      # Opened with AI_BUILD_TOKEN rather than the built-in token, because
-      # GitHub does not start other workflows (Codex Review) for pull
-      # requests opened with the built-in token. Runs outside the checkout
-      # so no agent-written git configuration executes while the token is set.
-      - name: Create pull request
-        id: pr
-        env:
-          GH_TOKEN: ${{ secrets.AI_BUILD_TOKEN }}
-          SCRIPTS_SHA256: ${{ steps.scripts.outputs.manifest_sha256 }}
-          BASE_BRANCH: ${{ github.event.repository.default_branch }}
-          BRANCH: ${{ steps.start.outputs.branch }}
-          ISSUE_NUMBER: ${{ github.event.issue.number }}
-          ISSUE_TITLE: ${{ github.event.issue.title }}
-          BLOCKER: ${{ steps.validate.outputs.blocker }}
-        working-directory: ${{ runner.temp }}
-        run: |
-          d="$RUNNER_TEMP/ai-build-scripts"
-          echo "$SCRIPTS_SHA256  $d/MANIFEST" | sha256sum --check --status
-          (cd "$d" && sha256sum --check --status MANIFEST)
-          BODY_FILE="$RUNNER_TEMP/pull-request-body.md" bash "$d/create-pull-request.sh"
-
-      # A blocker is published as a draft for review, but the run must not
-      # look like a completed implementation.
-      - name: Fail on implementation blocker
-        if: steps.validate.outputs.blocker == 'true'
-        run: |
-          echo "::error::Claude Code recorded a blocker instead of implementing the plan. See docs/implementation-blocker.md in the draft pull request."
-          echo "### Implementation blocked; see the draft pull request." >> "$GITHUB_STEP_SUMMARY"
-          exit 1
-
       - name: Report outcome
         if: always()
         env:
           HANDOFF: ${{ steps.handoff.outcome }}
           IMPLEMENT: ${{ steps.implement.outcome }}
           VALIDATE: ${{ steps.validate.outcome }}
-          PR: ${{ steps.pr.outcome }}
-          PR_URL: ${{ steps.pr.outputs.url }}
+          PUBLISH: ${{ steps.publish.outcome }}
           BLOCKER: ${{ steps.validate.outputs.blocker }}
         run: |
           {
@@ -355,6 +341,98 @@ jobs:
             echo "| Architecture handoff | ${HANDOFF:-not run} |"
             echo "| Claude Code implementation | ${IMPLEMENT:-not run} |"
             echo "| Patch validation | ${VALIDATE:-not run} |"
-            echo "| Pull request | ${PR:-not run} ${PR_URL} |"
+            echo "| Branch pushed | ${PUBLISH:-not run} |"
             echo "| Blocker recorded | ${BLOCKER:-n/a} |"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # Records the run in the build log and opens the pull request, on a fresh
+  # runner where no agent ran. Its scripts come from the starting commit, not
+  # from the agent-written branch, and AI_BUILD_TOKEN is used only here.
+  log:
+    needs: [architect, implement]
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    # contents: write pushes the build-log commit to the issue branch.
+    permissions:
+      contents: write
+      issues: read
+      pull-requests: read
+
+    steps:
+      - name: Checkout trusted scripts
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ needs.architect.outputs.start_sha }}
+          path: trusted
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+
+      - name: Checkout implementation
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          ref: ${{ needs.implement.outputs.head }}
+          path: work
+          fetch-depth: 0
+
+      # One row per run in docs/build-log.csv, with both agents' reports.
+      # Rebuilt from the starting commit, so agent edits to the log are dropped.
+      - name: Record run in build log
+        working-directory: work
+        env:
+          HANDOFF: ${{ needs.architect.outputs.handoff }}
+          CLAUDE_REPORT_B64: ${{ needs.implement.outputs.claude_report_b64 }}
+          START_SHA: ${{ needs.architect.outputs.start_sha }}
+          HEAD_SHA: ${{ needs.implement.outputs.head }}
+          BRANCH: ${{ needs.implement.outputs.branch }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          BLOCKER: ${{ needs.implement.outputs.blocker }}
+          AGENT_COMMITS: ${{ needs.implement.outputs.agent_commits }}
+        run: |
+          if [ "$(git rev-parse HEAD)" != "$HEAD_SHA" ]; then
+            echo "::error::Checked out $(git rev-parse HEAD), expected the pushed implementation $HEAD_SHA."
+            exit 1
+          fi
+          CODEX_REPORT=$(printf '%s' "$HANDOFF" | jq -r '.report // ""')
+          CLAUDE_REPORT=$(printf '%s' "$CLAUDE_REPORT_B64" | base64 -d)
+          export CODEX_REPORT CLAUDE_REPORT
+          bash "$GITHUB_WORKSPACE/trusted/.github/scripts/record-build-log.sh" "$START_SHA"
+
+      # A fast-forward push: it fails rather than overwrite a branch that moved.
+      - name: Push build log
+        working-directory: work
+        env:
+          BRANCH: ${{ needs.implement.outputs.branch }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          git -c user.name="ai-architecture-bot" \
+            -c user.email="ai-architecture-bot@users.noreply.github.com" \
+            commit --quiet -m "Record ai-build run for issue #${ISSUE_NUMBER} in the build log"
+          git push --quiet origin "HEAD:refs/heads/$BRANCH"
+
+      # Opened with AI_BUILD_TOKEN rather than the built-in token, because
+      # GitHub does not start other workflows (Codex Review) for pull
+      # requests opened with the built-in token.
+      - name: Create pull request
+        id: pr
+        env:
+          GH_TOKEN: ${{ secrets.AI_BUILD_TOKEN }}
+          BASE_BRANCH: ${{ github.event.repository.default_branch }}
+          BRANCH: ${{ needs.implement.outputs.branch }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+          BLOCKER: ${{ needs.implement.outputs.blocker }}
+        working-directory: ${{ runner.temp }}
+        run: |
+          BODY_FILE="$RUNNER_TEMP/pull-request-body.md" \
+            bash "$GITHUB_WORKSPACE/trusted/.github/scripts/create-pull-request.sh"
+
+      # A blocker is published as a draft for review, but the run must not
+      # look like a completed implementation.
+      - name: Fail on implementation blocker
+        if: needs.implement.outputs.blocker == 'true'
+        run: |
+          echo "::error::Claude Code recorded a blocker instead of implementing the plan. See docs/implementation-blocker.md in the draft pull request."
+          echo "### Implementation blocked; see the draft pull request." >> "$GITHUB_STEP_SUMMARY"
+          exit 1

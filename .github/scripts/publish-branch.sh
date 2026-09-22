@@ -12,6 +12,7 @@
 # variables, never as an argument.
 #
 # Env: GITHUB_REPOSITORY and GITHUB_TOKEN, or PUBLISH_REMOTE (for tests).
+# Writes head=<pushed sha> to $GITHUB_OUTPUT when set.
 # Usage: publish-branch.sh <start-sha> <branch> <commit-message>
 set -euo pipefail
 
@@ -65,3 +66,6 @@ fi
 
 git push --quiet --no-verify "$remote" "refs/heads/$branch:refs/heads/$branch"
 echo "Pushed $branch at $head."
+if [ -n "${GITHUB_OUTPUT:-}" ]; then
+  echo "head=$head" >> "$GITHUB_OUTPUT"
+fi
