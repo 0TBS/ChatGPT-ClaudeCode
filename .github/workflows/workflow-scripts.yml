@@ -7,31 +7,25 @@ on:
       - ".github/workflows/**"
       - "README.md"
       - "CLAUDE.md"
+      - "AGENTS.md"
 
 jobs:
   test:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
 
     permissions:
       contents: read
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           persist-credentials: false
-
-      - name: ShellCheck
-        run: shellcheck .github/scripts/*.sh
-
-      - name: Test review verdict check
-        run: bash .github/scripts/test-check-review-verdict.sh
 
       - name: Install PyYAML
         run: python3 -c 'import yaml' 2>/dev/null || python3 -m pip install --quiet --user --break-system-packages pyyaml
 
-      - name: Test workflow structure
-        run: python3 .github/scripts/test-workflow-structure.py
-
-      - name: Test implementation patch validator
-        run: bash .github/scripts/test-validate-implementation-patch.sh
+      # Runs every check below; needs no API secrets.
+      - name: Run workflow checks
+        run: bash .github/scripts/run-checks.sh
