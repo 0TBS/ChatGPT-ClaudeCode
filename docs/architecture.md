@@ -24,24 +24,30 @@ commit-and-pull-request step.
 `.github/workflows/codex-architect.yml` is the single orchestration boundary:
 
 1. An authorized maintainer applies the `ai-build` label to an issue.
-2. The workflow checks out the repository, records the starting commit, creates a
-   unique issue/run branch, and copies the issue from `$GITHUB_EVENT_PATH` into the
-   git-ignored `.ai-build/issue.json` as untrusted data.
-3. Codex inspects the repository and writes `docs/architecture.md` and
-   `docs/implementation-plan.md` without implementing feature code.
-4. The workflow verifies that both handoff artifacts exist, identify the issue as
-   `#<number>`, and pass Git whitespace checks, and that the architect changed no
-   other file and made no commit. Claude does not run if this fails.
-5. Claude Code reads the artifacts and implements the plan in the same workspace.
+2. The **architect** job checks out the repository, records the starting commit,
+   and copies the issue from `$GITHUB_EVENT_PATH` into the git-ignored
+   `.ai-build/issue.json` as untrusted data.
+3. Codex, read-only and as that job's last step, inspects the repository and
+   returns the content of `docs/architecture.md` and `docs/implementation-plan.md`
+   as JSON conforming to an output schema. It implements no feature code.
+4. The **implement** job starts on a fresh runner from the same commit, creates a
+   unique issue/run branch, writes the two documents from the JSON, and verifies
+   that both are non-empty, identify the issue as `#<number>`, and pass Git
+   whitespace checks, and that nothing else changed. Claude does not run if this
+   fails.
+5. Claude Code reads the documents and implements the plan in that workspace.
 6. Deterministic shell steps validate everything changed since the starting commit
    (including new files and any agent commits), commit what is left, push the issue
    branch, and create or reuse the pull request, which is opened with the
    `AI_BUILD_TOKEN` secret so that step 7 is triggered.
 7. The existing Codex review workflow reviews the resulting pull request.
 
-The two AI phases deliberately share a job and workspace. This makes their ordering
-and artifact handoff explicit without relying on commits to the default branch or
-on one workflow's token-generated event triggering another workflow.
+The two AI phases run in two jobs of one workflow, linked by `needs`. This keeps
+their ordering and handoff explicit without relying on commits to the default branch
+or on one workflow's token-generated event triggering another workflow, and it
+follows the `openai/codex-action` security guide, which recommends running Codex as
+the last step of a job: nothing Codex leaves on its runner can reach Claude,
+publication, or `AI_BUILD_TOKEN`.
 
 ## Components and file impacts
 
@@ -63,13 +69,15 @@ introduced.
   Agents must not treat it as higher-priority instructions or reveal secrets.
 - The workflow starts only when a user with issue-label permission applies
   `ai-build`; repository settings should restrict label management to trusted users.
-- The build job's `GITHUB_TOKEN` has `contents: write` (to push the branch) and read
-  access to issues and pull requests. The pull request is opened with the
+- The architect job's `GITHUB_TOKEN` is read-only. The implement job's has
+  `contents: write` (to push the branch) and read access to issues and pull
+  requests. The pull request is opened with the
   `AI_BUILD_TOKEN` fine-grained token, used only in that step. Secrets remain in
   action inputs or step environments and are never interpolated into prompts.
-- `permission-profile: ":workspace"` limits the architect's writes to the workspace
-  and system temp directories, keeps `.git/` read-only, and grants no network
-  access (per the Codex permissions documentation and the codex-action README).
+- `permission-profile: ":read-only"` keeps the architect's commands read-only (per
+  the Codex permissions documentation and the codex-action README). Its only output
+  is its schema-checked JSON answer, passed to the implement job as a job output
+  and read there only through an environment variable.
   Claude is told not to alter secrets or perform Git publication; fixed workflow
   steps own publication, and tolerate agent-made commits.
 - Third-party actions are pinned to full commit SHAs. The job has a 60-minute
@@ -97,8 +105,13 @@ labels no longer drive automation.
 
 ## Decisions and alternatives
 
-- **Single sequential job instead of two label-triggered workflows:** guarantees
-  ordering and shares uncommitted handoff files.
+- **Two jobs in one workflow instead of one job or two label-triggered
+  workflows:** `needs` guarantees ordering, and a separate job gives Claude a
+  runner Codex never touched. An earlier single-job version ran Claude and
+  publication after Codex on the same runner; three test runs then stalled after
+  Codex's step, matching the codex-action guidance to run Codex last.
+- **Structured JSON handoff instead of shared files:** Codex can be the last step
+  of its job, and read-only, while the documents still land in the repository.
 - **Workflow-owned Git operations instead of model-owned publication:** makes the
   branch, commit, and PR behavior deterministic and keeps those permissions out of
   the implementation prompt.
@@ -107,24 +120,18 @@ labels no longer drive automation.
 
 ## Unresolved risks
 
-- The `openai/codex-action` security guide recommends running Codex as the last step
-  of a job, because a Codex run can leave processes running or files behind that
-  later, more privileged steps may use. This design runs Claude Code, publication,
-  and pull-request creation after Codex in the same job. The `:workspace` profile
-  (workspace-only writes, read-only `.git/`, no network) and the handoff check
-  reduce this, but whether the sandbox also stops leftover processes is not stated
-  in the official documentation.
-- Claude Code runs unsandboxed with Bash, in the same job as later steps. A
-  prompt-injected Claude could change the environment of later steps (for example
-  through `$GITHUB_ENV`) or push other branches with the job token. Branch
-  protection limits the latter; the former can expose `AI_BUILD_TOKEN`.
-- Both risks are removed by splitting architect, implementation, and publication
-  into separate jobs that pass only file contents between them. That changes the
-  "single sequential job" decision above and needs an architecture decision.
+- Claude Code runs unsandboxed with Bash, in the same job as validation,
+  publication and pull-request creation. A prompt-injected Claude could change the
+  environment of those later steps (for example through `$GITHUB_ENV`) or push
+  other branches with the job token. Branch protection limits the latter; the
+  former can expose `AI_BUILD_TOKEN`. Moving publication into a third job that
+  receives only the validated patch would remove it; that is a further architecture
+  decision.
 
 ## Acceptance criteria
 
-1. Applying `ai-build` runs Codex before Claude Code in one job.
+1. Applying `ai-build` runs Codex in an architect job, then Claude Code in an
+   implement job that starts only after the architect job succeeds.
 2. Codex is constrained to architecture and creates both required documents.
 3. Claude is required to consume those documents and not redesign them silently.
 4. Issue content is handled as untrusted data in both phases.

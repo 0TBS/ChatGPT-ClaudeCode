@@ -23,7 +23,8 @@ reviews.
    `Workflow Scripts` checks. The build job's token can push branches, and branch
    protection is what keeps an agent from pushing to the default branch directly.
 4. Use GitHub-hosted runners. The Codex action permanently removes `sudo` from the
-   runner user for the rest of the job, which is only safe on a disposable runner.
+   runner user and can leave processes behind, so it runs as the last step of its
+   own job on a disposable runner.
 
 No other repository setting is required. The built-in `GITHUB_TOKEN` does not need
 permission to create pull requests.
@@ -33,15 +34,22 @@ permission to create pull requests.
 1. Open a detailed issue describing the desired behavior, constraints, and examples.
 2. Apply the `ai-build` label. It is the only supported trigger; other labels and
    other events do nothing.
-3. The `ChatGPT Architect to Claude Code` workflow then:
-   - records the commit it started from and creates a branch named
-     `ai/issue-<number>-<run>-<attempt>`, unique for every run and rerun;
+3. The `ChatGPT Architect to Claude Code` workflow runs two jobs.
+
+   The **architect** job:
+   - records the commit it started from;
    - copies the issue into `.ai-build/issue.json` (never committed) as untrusted
-     data for both agents;
-   - asks Codex, as architect only, to write `docs/architecture.md` and
-     `docs/implementation-plan.md`;
-   - checks the handoff: both documents exist, name the issue as `#<number>`, and
-     nothing else in the repository changed. Claude does not run if this fails;
+     data;
+   - runs Codex read-only, as the job's last step, and has it return the contents
+     of `docs/architecture.md` and `docs/implementation-plan.md` as JSON.
+
+   The **implement** job then starts on a fresh runner, from the same commit, and:
+   - creates a branch named `ai/issue-<number>-<run>-<attempt>`, unique for every
+     run and rerun;
+   - writes the two documents from the architect's JSON;
+   - checks the handoff: both documents are non-empty, name the issue as
+     `#<number>`, and nothing else in the repository changed. Claude does not run
+     if this fails;
    - asks Claude Code to implement and test that plan without changing the two
      documents;
    - validates everything changed since the starting commit, including new files and
@@ -75,8 +83,11 @@ passed to the agents only as a data file, never interpolated into prompts or she
 scripts. Every third-party action is pinned to a full commit SHA. Each job has a
 timeout, and Claude Code has a turn limit.
 
-The scripts that run after the agents are copied out of the workspace and hashed
-before either agent starts, and every later step verifies those hashes. The branch
+Codex runs read-only in a job of its own, with only read access to the repository,
+and hands over nothing but its JSON answer, so no process or file it leaves behind
+can reach Claude, the push, or the pull-request token. The scripts that run after
+Claude are copied out of the workspace and hashed before it starts, and every later
+step verifies those hashes. The branch
 is pushed from a fresh repository to an explicit URL, and the pull request is
 opened from outside the checkout, so git configuration written by an agent cannot
 redirect the push or run code while the pull-request token is present.
@@ -88,7 +99,8 @@ redirect the push or run code while the pull-request token is present.
 | `The <NAME> secret is not set` | Add the named secret (see Setup). |
 | Nothing runs after labelling | The label must be exactly `ai-build`, and the workflow file must be on the default branch. |
 | Codex or Claude step fails on a write-access or human-actor check | The person who applied the label needs write access, and must not be a bot. |
-| `does not identify issue #<n>` or `changed files outside the handoff documents` | The architect did not follow the handoff contract. Check the listed files, then relabel. |
+| `The architect's output is not a JSON object…` or `produced no handoff output` | Codex did not return both documents. Check the architect job's log, then relabel. |
+| `does not identify issue #<n>` | A handoff document does not mention the issue as `#<number>`. Relabel to retry. |
 | `Claude Code changed the approved architecture documents` | Claude edited the design. Relabel to retry; if the design is wrong, fix the issue first. |
 | `produced no changes beyond the architecture documents` | Claude implemented nothing. Check the Claude step log for a turn-limit stop or an error. |
 | `already exists on the remote` | A branch with this name exists. Rerun the workflow; each attempt uses a new name. |
@@ -109,6 +121,7 @@ blocker) to the run's summary page.
 - `test-workflow-structure.py`: step order, the handoff gate before Claude, prompt
   and secret handling, action pinning, timeouts, permissions, blocker handling,
   review publication, and that this README matches the workflow;
-- script suites: `test-prepare-issue-context.sh`, `test-check-architect-boundary.sh`,
+- script suites: `test-prepare-issue-context.sh`, `test-write-handoff-docs.sh`,
+  `test-check-architect-boundary.sh`,
   `test-validate-implementation-patch.sh`, `test-publish-branch.sh`,
   `test-create-pull-request.sh` and `test-check-review-verdict.sh`.
