@@ -44,13 +44,17 @@ through the pipeline), do not implement it yourself. Instead:
 1. Write the request as a GitHub issue: a short title, and a body with the goal,
    requirements, constraints, and acceptance criteria. Save the body to a temporary
    file outside the repository.
-2. Run `python3 .github/scripts/ai-build-request.py start --title "<title>"
-   --body-file <file>`. It opens the issue, labels it `ai-build`, and waits for the
-   workflow's build log.
-3. Show the user what it printed: the issue and pull request links, the run's
-   Markdown build-log entry, and both reports. If it timed out, tell the user the
-   issue number and that `ai-build-request.py wait <number>` fetches the result
-   later.
+2. Choose a report path outside the repository, for example
+   `/tmp/ai-build-report-<short-name>.md`.
+3. Run `python3 .github/scripts/ai-build-request.py start --title "<title>"
+   --body-file <file> --report-file <report path>`. It opens the issue, labels it
+   `ai-build`, waits for the workflow's build log, prints it, and on success saves
+   it to the report path and prints `Markdown report file: <path>`.
+4. Return that Markdown file and its path to the user, and show what it contains:
+   the issue and pull request links, the run's Markdown build-log entry, and both
+   reports. If it timed out, no file is written: tell the user the issue number and
+   that `ai-build-request.py wait <number> --report-file <report path>` fetches the
+   result later.
 
 It needs `GH_TOKEN` in the environment; if it is missing, tell the user to follow
 "Start from a Codex chat" in README.md. Never print the token.

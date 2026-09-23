@@ -160,6 +160,104 @@ TOKEN='' run '{}' wait 12; rc=$?
 ok=0; [ "$rc" -eq 1 ] && grep -qF "set GH_TOKEN" "$root/out" && [ ! -s "$root/requests" ] && ok=1
 check "fails without a token, before calling GitHub" "$ok"
 
+# ------------------------------------------------------------- --report-file
+reports="$root/my reports"
+mkdir -p "$reports" || die "mkdir reports"
+
+# same_as_stdout <file>: the file equals stdout minus the progress lines
+# (Opened..., Waiting...) and the final "Markdown report file:" line.
+same_as_stdout() {
+  python3 - "$root/out" "$1" <<'EOF'
+import sys
+out = open(sys.argv[1], encoding="utf-8").read().split("\n")
+while out and out[0].startswith(("Opened ", "Waiting for the build log")):
+    out = out[1:]
+if out[-1] == "":
+    out = out[:-1]
+assert out[-1] == f"Markdown report file: {sys.argv[2]}", out[-1]
+printed = "\n".join(out[:-1]) + "\n"
+saved = open(sys.argv[2], encoding="utf-8").read()
+sys.exit(0 if saved == printed else 1)
+EOF
+}
+
+restart
+dest="$reports/start report.md"
+run '{"label_exists": true, "log_after": 2}' start --title "Add feature" --body-file "$root/request.md" \
+  --report-file "$dest"; rc=$?
+ok=0; [ "$rc" -eq 0 ] && [ -f "$dest" ] && [ ! -L "$dest" ] && ok=1
+check "start --report-file: creates a regular Markdown file (path with spaces)" "$ok"
+ok=0; grep -qxF 'Issue: #12' "$dest" && grep -qxF 'Pull request: https://github.com/o/r/pull/13' "$dest" &&
+  grep -qxF '### Codex architect report' "$dest" && grep -qxF 'Design notes.' "$dest" &&
+  grep -qxF '### Claude implementer report' "$dest" && grep -qxF 'Tests pass.' "$dest" && ok=1
+check "start --report-file: the file has the issue, PR link and both reports" "$ok"
+ok=0; same_as_stdout "$dest" && ok=1
+check "start --report-file: the file is exactly the report printed on stdout" "$ok"
+ok=0; ! grep -qF '<!-- ai-build-log -->' "$dest" && ! grep -qi 'csv' "$dest" && ! grep -qi 'csv' "$root/out" && ok=1
+check "start --report-file: no lookup marker and no CSV in the file or output" "$ok"
+ok=0; [ "$(tail -c 1 "$dest" | od -An -c | tr -d ' ')" = '\n' ] && [ "$(tail -c 2 "$dest" | od -An -c | tr -d ' ')" != '\n\n' ] && ok=1
+check "start --report-file: the file ends with exactly one newline" "$ok"
+ok=0; [ "$(find "$reports" -mindepth 1 | wc -l)" -eq 1 ] && ok=1
+check "start --report-file: leaves no temporary file behind" "$ok"
+ok=0; ! grep -q tok "$dest" && ! grep -q tok "$root/out" && ok=1
+check "start --report-file: the token is in neither the output nor the file" "$ok"
+
+restart
+dest="$reports/wait report.md"
+echo "old report" > "$dest" || die "old report"
+run '{"log_after": 2}' wait 12 --report-file "$dest"; rc=$?
+ok=0; [ "$rc" -eq 0 ] && [ -f "$dest" ] && grep -qxF 'Tests pass.' "$dest" && ! grep -q 'old report' "$dest" && ok=1
+check "wait --report-file: replaces an existing file with the report" "$ok"
+ok=0; same_as_stdout "$dest" && [ "$(find "$reports" -mindepth 1 | wc -l)" -eq 2 ] && ok=1
+check "wait --report-file: matches stdout and leaves no temporary file" "$ok"
+
+restart
+before=$(find "$reports" -mindepth 1 | sort)
+run '{"log_after": 2}' wait 12; rc=$?
+ok=0; [ "$rc" -eq 0 ] && ! grep -q 'Markdown report file' "$root/out" && grep -qxF 'Tests pass.' "$root/out" &&
+  [ "$(find "$reports" -mindepth 1 | sort)" = "$before" ] && ok=1
+check "without --report-file: prints the report as before and writes no file" "$ok"
+
+restart
+run '{"run": {"status": "completed", "conclusion": "failure"}}' wait 12 --report-file "$reports/failed.md"; rc=$?
+ok=0; [ "$rc" -eq 1 ] && grep -qF "ended with 'failure'" "$root/out" && [ ! -e "$reports/failed.md" ] && ok=1
+check "a failed run creates no report file and keeps its exit status" "$ok"
+restart
+echo "keep me" > "$reports/existing.md" || die "existing"
+run '{"run": {"status": "completed", "conclusion": "failure"}}' wait 12 --report-file "$reports/existing.md"; rc=$?
+ok=0; [ "$rc" -eq 1 ] && [ "$(cat "$reports/existing.md")" = "keep me" ] && ok=1
+check "a failed run leaves an existing report file unchanged" "$ok"
+
+restart
+run '{"run": {"status": "in_progress"}}' --timeout 0 wait 12 --report-file "$reports/timeout.md"; rc=$?
+ok=0; [ "$rc" -eq 2 ] && grep -qF "again later" "$root/out" && [ ! -e "$reports/timeout.md" ] && ok=1
+check "a timeout creates no report file and keeps its exit status" "$ok"
+run '{"run": {"status": "in_progress"}}' --timeout 0 wait 12 --report-file "$reports/existing.md"; rc=$?
+ok=0; [ "$rc" -eq 2 ] && [ "$(cat "$reports/existing.md")" = "keep me" ] && ok=1
+check "a timeout leaves an existing report file unchanged" "$ok"
+
+restart
+{ echo "target" > "$root/target.md" && ln -s "$root/target.md" "$reports/link.md"; } || die "symlink"
+run '{"log_after": 1}' wait 12 --report-file "$reports/link.md"; rc=$?
+ok=0; [ "$rc" -ne 0 ] && grep -qF "is a symlink" "$root/out" && [ -L "$reports/link.md" ] &&
+  [ "$(cat "$root/target.md")" = "target" ] && [ ! -s "$root/requests" ] && ok=1
+check "a symlink destination is refused before any GitHub call, target unchanged" "$ok"
+
+mkdir -p "$reports/a dir.md" || die "dir"
+run '{"log_after": 1}' wait 12 --report-file "$reports/a dir.md"; rc=$?
+ok=0; [ "$rc" -ne 0 ] && grep -qF "is a directory" "$root/out" && [ -d "$reports/a dir.md" ] && [ ! -s "$root/requests" ] && ok=1
+check "a directory destination is refused before any GitHub call" "$ok"
+
+run '{"log_after": 1}' wait 12 --report-file "$root/missing dir/r.md"; rc=$?
+ok=0; [ "$rc" -ne 0 ] && grep -qF "parent directory does not exist" "$root/out" && [ ! -s "$root/requests" ] && ok=1
+check "a destination in a missing directory is refused before any GitHub call" "$ok"
+
+run '{"label_exists": true}' start --no-wait --title "Add feature" --body-file "$root/request.md" \
+  --report-file "$reports/nowait.md"; rc=$?
+ok=0; [ "$rc" -ne 0 ] && grep -qF "cannot be used with --no-wait" "$root/out" && [ ! -e "$reports/nowait.md" ] &&
+  [ ! -s "$root/requests" ] && ok=1
+check "start --no-wait --report-file is refused before opening an issue" "$ok"
+
 if [ "$failures" -ne 0 ]; then
   echo "$failures test(s) failed."
   exit 1
