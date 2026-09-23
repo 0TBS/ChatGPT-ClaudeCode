@@ -1,2 +1,2 @@
-# Keep both sides when two branches each append a build-log row.
-docs/build-log.csv merge=union
+# Keep both sides when two branches each append a build-log entry.
+docs/build-log.md merge=union
