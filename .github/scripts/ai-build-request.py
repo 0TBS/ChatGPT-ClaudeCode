@@ -8,9 +8,10 @@ Run by Codex in a Codex cloud task (see AGENTS.md), not by the workflow:
 
 `start` opens an issue, adds the `ai-build` label (which starts the
 workflow), then waits like `wait`. `wait` polls the issue until the
-workflow posts its build-log comment and prints it, CSV included, so the
-result lands in the chat that asked for it. It stops early with the run's
-link if the run fails before posting, and gives up after --timeout seconds.
+workflow posts its build-log comment and prints it: a Markdown report of the
+run with both agents' reports, so the result lands in the chat that asked
+for it. It stops early with the run's link if the run fails before posting,
+and gives up after --timeout seconds.
 
 Needs GH_TOKEN (or GITHUB_TOKEN): a fine-grained token for the repository
 with Issues read/write and Actions read. The repository comes from --repo,

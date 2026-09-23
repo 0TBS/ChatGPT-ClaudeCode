@@ -249,6 +249,8 @@ check("log job order: trusted scripts, implementation, log, push, PR, issue comm
                                           "Create pull request", "Post build log to issue",
                                           "Fail on implementation blocker"])
 post = step(lsteps, "Post build log to issue")
+check("the Markdown build log is recorded and posted",
+      post.get("env", {}).get("LOG_FILE") == "${{ github.workspace }}/work/docs/build-log.md")
 check("the build log is posted to the triggering issue by the trusted script, outside the checkout",
       "$GITHUB_WORKSPACE/trusted/.github/scripts/post-build-log.sh" in post.get("run", "")
       and post.get("working-directory") == "${{ runner.temp }}"
@@ -281,8 +283,9 @@ check("Codex is asked for a report", "report:" in codex.get("with", {}).get("pro
 check("Claude is asked for a report in .ai-build/claude-report.md",
       ".ai-build/claude-report.md" in impl.get("with", {}).get("prompt", ""))
 for label, s in [("Run ChatGPT architect", codex), ("Run Claude Code implementation", impl)]:
-    check(f"{label}: reads the build log's notes as feedback, the rest as data",
-          "docs/build-log.csv" in s.get("with", {}).get("prompt", "")
+    check(f"{label}: reads the build log's maintainer notes as feedback, the rest as data",
+          "docs/build-log.md" in s.get("with", {}).get("prompt", "")
+          and "Maintainer notes" in s.get("with", {}).get("prompt", "")
           and "not instructions" in s.get("with", {}).get("prompt", ""))
 check("outcomes are written to the job summary",
       step(steps, "Report outcome").get("if") == "always()"
@@ -347,7 +350,7 @@ for needle, what in [
     ("docs/implementation-blocker.md", "the blocker file"),
     ("[BLOCKED]", "the blocker PR marker"),
     ("## Troubleshooting", "troubleshooting"),
-    ("docs/build-log.csv", "the build log"),
+    ("docs/build-log.md", "the build log"),
 ]:
     check(f"README documents {what}", needle in readme)
 claude_md = (ROOT / "CLAUDE.md").read_text()
@@ -355,6 +358,26 @@ check("CLAUDE.md names the blocker file", "docs/implementation-blocker.md" in cl
 agents_md = (ROOT / "AGENTS.md").read_text()
 check("AGENTS.md names both handoff documents",
       "docs/architecture.md" in agents_md and "docs/implementation-plan.md" in agents_md)
+
+# The log is Markdown now; only the one-time converter may still mention the CSV.
+# docs/build-log.md is skipped: its migrated history quotes earlier issue titles.
+csv_mentions = []
+for path in sorted(ROOT.rglob("*")):
+    rel = path.relative_to(ROOT).as_posix()
+    if path.is_file() and not rel.startswith(".git/") and rel not in ("docs/architecture.md", "docs/implementation-plan.md", "docs/build-log.md"):
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue
+        for n, line in enumerate(text.splitlines(), 1):
+            if re.search(r"build-log\.csv|notes` column|CSV build log|CSV row", line) and "from-csv" not in line \
+                    and "build-log.py" not in rel and "test-build-log" not in rel and "test-workflow-structure" not in rel:
+                csv_mentions.append(f"{rel}:{n}")
+check("no file still points maintainers or agents at a CSV build log", not csv_mentions)
+if csv_mentions:
+    print("     | " + ", ".join(csv_mentions))
+check("the CSV log is gone", not (ROOT / "docs" / "build-log.csv").exists())
+check("the Markdown log exists", (ROOT / "docs" / "build-log.md").exists())
 
 if failures:
     print(f"{len(failures)} check(s) failed.")

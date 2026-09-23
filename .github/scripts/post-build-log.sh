@@ -1,16 +1,17 @@
 #!/usr/bin/env bash
-# Posts this run's build-log row, with Codex's and Claude's reports, as a
-# comment on the issue that started the run, so the result goes back to
-# where the request came from.
+# Posts this run's build-log entry, with Codex's and Claude's reports, as a
+# Markdown comment on the issue that started the run, so the result goes back
+# to where the request came from.
 #
-# The row's values are untrusted (issue title, agent reports), so every one
-# is shown inside a fenced block longer than any backtick run it contains:
-# no Markdown, links or @mentions in them are rendered.
+# The entry is re-rendered by build-log.py from the log, and must be this
+# issue's. Its untrusted values (issue title, agent reports, file names) stay
+# inside fenced blocks they cannot close: no Markdown, HTML, links or
+# @mentions in them are rendered.
 #
 # Run this from outside the repository checkout, like create-pull-request.sh.
 #
 # Env: GH_TOKEN, GITHUB_REPOSITORY, ISSUE_NUMBER, LOG_FILE (the build log
-#      with this run's row last), BODY_FILE, and optionally PR_URL.
+#      with this run's entry last), BODY_FILE, and optionally PR_URL.
 set -euo pipefail
 
 fail() { echo "::error::$*" >&2; exit 1; }
@@ -25,40 +26,28 @@ if git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   fail "Run this outside the repository checkout."
 fi
 
-python3 - "$LOG_FILE" "${PR_URL:-}" > "$BODY_FILE" <<'EOF'
-import csv, io, re, sys
-
-log, pr_url = sys.argv[1], sys.argv[2]
-with open(log, newline="", encoding="utf-8-sig") as f:
-    rows = list(csv.reader(f))
-if len(rows) < 2:
-    sys.exit("The build log has no rows.")
-header, row = rows[0], rows[-1]
-values = dict(zip(header, row))
-
-def block(text, lang="text"):
-    longest = max((len(m) for m in re.findall(r"`+", text)), default=0)
-    fence = "`" * max(3, longest + 1)
-    return f"{fence}{lang}\n{text}\n{fence}"
-
-reports = ("codex_report", "claude_report")
-fields = "\n".join(f"{k}: {v}" for k, v in values.items() if k not in reports)
-raw = io.StringIO()
-writer = csv.writer(raw, quoting=csv.QUOTE_ALL, lineterminator="\n")
-writer.writerows([header, row])
-# The marker lets ai-build-request.py find this comment.
-out = ["<!-- ai-build-log -->", "## Build log for this run", ""]
-if pr_url.startswith("https://"):
-    out += [f"Pull request: {pr_url}", ""]
-out += ["This row was added to `docs/build-log.csv`:", "", block(fields), ""]
-for key, title in (("codex_report", "Codex report (architect)"), ("claude_report", "Claude report (implementer)")):
-    out += [f"### {title}", "", block(values.get(key) or "(no report)"), ""]
-out += ["<details><summary>CSV: header and this run's row</summary>", "",
-        block(raw.getvalue().rstrip("\n"), "csv"), "", "</details>", ""]
-out.append("Add feedback in the `notes` column of `docs/build-log.csv` on the default "
-           "branch; Codex and Claude read it on the next run.")
-print("\n".join(out))
-EOF
+here=$(cd "$(dirname "$0")" && pwd)
+entry=$(python3 "$here/build-log.py" last "$LOG_FILE" "$ISSUE_NUMBER") ||
+  fail "The build log's last entry is not this run's (issue #$ISSUE_NUMBER)."
+pr=
+case "${PR_URL:-}" in
+  https://*) case "$PR_URL" in *[[:space:]]*) ;; *) pr=$PR_URL ;; esac ;;
+esac
+{
+  # The marker lets ai-build-request.py find this comment.
+  echo "<!-- ai-build-log -->"
+  echo "## Build log for this run"
+  echo
+  echo "Issue: #$ISSUE_NUMBER"
+  [ -z "$pr" ] || echo "Pull request: $pr"
+  echo
+  echo "This entry was added to \`docs/build-log.md\`:"
+  echo
+  printf '%s\n' "$entry"
+  echo
+  echo "Add feedback in the entry's **Maintainer notes** block in \`docs/build-log.md\` on"
+  echo "the default branch; Codex and Claude read it on the next run."
+} > "$BODY_FILE"
 
 # Ignore any gh configuration an agent could have written, and pin the host.
 GH_CONFIG_DIR=$(mktemp -d)

@@ -18,7 +18,12 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 root = sys.argv[1]
 state = {"comment_gets": 0}
-LOG = "<!-- ai-build-log -->\n## Build log for this run\n\n```csv\n\"date_utc\",\"issue\"\n\"2026-09-22T00:00:00Z\",\"12\"\n```"
+LOG = ("<!-- ai-build-log -->\n## Build log for this run\n\nIssue: #12\n"
+       "Pull request: https://github.com/o/r/pull/13\n\n<!-- ai-build-run -->\n"
+       "## Issue #12 - 2026-09-22T00:00:00Z\n\n### Details\n\n```text\nIssue: 12\n```\n\n"
+       "### Codex architect report\n\n```text\nDesign notes.\n```\n\n"
+       "### Claude implementer report\n\n```text\nBuilt it.\nTests pass.\n```\n\n"
+       "### Maintainer notes\n\n```text\n```")
 
 class H(BaseHTTPRequestHandler):
     def log_message(self, *a):
@@ -108,8 +113,13 @@ check() {
 
 run '{"label_exists": true, "log_after": 3, "run": {"status": "in_progress"}}' \
   start --title "Add feature" --body-file "$root/request.md"; rc=$?
-ok=0; [ "$rc" -eq 0 ] && grep -qF '"date_utc","issue"' "$root/out" && ok=1
-check "start: prints the build log's CSV into the chat" "$ok"
+ok=0; [ "$rc" -eq 0 ] && grep -qxF '## Issue #12 - 2026-09-22T00:00:00Z' "$root/out" &&
+  grep -qxF 'Pull request: https://github.com/o/r/pull/13' "$root/out" &&
+  grep -qxF 'Design notes.' "$root/out" && grep -qxF 'Tests pass.' "$root/out" &&
+  grep -qxF '### Maintainer notes' "$root/out" && ok=1
+check "start: prints the whole Markdown build report into the chat" "$ok"
+ok=0; ! grep -qi 'csv' "$root/out" && ! grep -qF '<!-- ai-build-log -->' "$root/out" && ok=1
+check "start: prints no CSV and strips the comment marker" "$ok"
 ok=0; grep -qF 'POST /repos/o/r/issues auth=Bearer tok body={"title": "Add feature", "body": "Build a thing.\n"}' "$root/requests" &&
   grep -qF 'POST /repos/o/r/issues/12/labels auth=Bearer tok body={"labels": ["ai-build"]}' "$root/requests" && ok=1
 check "start: opens the issue, then adds the ai-build label" "$ok"
@@ -128,12 +138,12 @@ check "wait: reports this issue's failed run and its link" "$ok"
 
 restart
 run '{"log_after": 2, "run": {"status": "completed", "conclusion": "failure"}}' wait 12; rc=$?
-ok=0; [ "$rc" -eq 0 ] && grep -qF '"date_utc","issue"' "$root/out" && ok=1
+ok=0; [ "$rc" -eq 0 ] && grep -qxF 'Tests pass.' "$root/out" && ok=1
 check "wait: a blocked run's log is shown although the run failed" "$ok"
 
 restart
 run '{"actions_forbidden": true, "log_after": 2}' wait 12; rc=$?
-ok=0; [ "$rc" -eq 0 ] && grep -qF '"date_utc","issue"' "$root/out" && ok=1
+ok=0; [ "$rc" -eq 0 ] && grep -qxF 'Tests pass.' "$root/out" && ok=1
 check "wait: still works when the token cannot read Actions" "$ok"
 
 restart

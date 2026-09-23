@@ -39,7 +39,7 @@ git add --all
 git diff --cached --check "$start" || fail "The change has whitespace errors."
 
 changed=$(git diff --cached --name-only "$start")
-implementation=$(printf '%s\n' "$changed" | grep -vxE 'docs/(architecture\.md|implementation-plan\.md|build-log\.csv)' | grep -v '^$' || true)
+implementation=$(printf '%s\n' "$changed" | grep -vxE 'docs/(architecture\.md|implementation-plan\.md|build-log\.md)' | grep -v '^$' || true)
 
 if [ -z "$implementation" ]; then
   fail "Claude Code produced no changes beyond the architecture documents."

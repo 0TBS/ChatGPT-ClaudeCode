@@ -1,91 +1,134 @@
-# README Paragraph Separation — Issue #13
+# Markdown build log
 
 ## Problem, goals, and non-goals
 
-The final sentence in `README.md`, `The ai-build pipeline returns a CSV build log to the Codex chat that requested the build.`, immediately follows a list item without a blank separator. Markdown can therefore render it as continuation text within that item.
+The ai-build pipeline recorded each run as a row in `docs/build-log.csv`, posted a CSV
+block on the issue, and printed it into the requesting Codex chat. Multi-line reports
+had to be flattened onto one line, spreadsheet-formula escaping was needed, and the
+result read poorly in GitHub and in chat.
 
-The goal is to insert exactly one empty line before that sentence, making it a standalone paragraph while preserving every existing README byte. The pull request must also contain the workflow-generated architecture, implementation plan, and build-log row.
+Goals:
 
-Non-goals: changing wording, reformatting other documentation, changing workflows or scripts, adding dependencies, or adding permanent tests for this formatting-only change.
+- Replace `docs/build-log.csv` with `docs/build-log.md`, one Markdown section per run.
+- Migrate every existing CSV row, including both reports and the notes column.
+- Keep the security boundaries: the log is rebuilt from the trusted starting commit,
+  untrusted values (issue titles, agent reports, file names) cannot forge structure,
+  and reports stay size-limited.
+- Keep maintainer feedback: both agents read every entry's maintainer notes.
+- Post and return the run's Markdown entry, not CSV, keeping the
+  `<!-- ai-build-log -->` comment marker.
+
+Non-goals: changing what is recorded, the jobs, permissions, or tokens; parsing
+arbitrary Markdown; adding dependencies.
 
 ## Current-state findings
 
-- Inspected `AGENTS.md`, `CLAUDE.md`, `CONTRIBUTING.md`, the existing design documents, workflows, relevant tests, and the triggering issue copy.
-- The starting commit is `9e221190b71b791203925bb576d69aae8734c140`.
-- `README.md` contains 12,688 bytes with LF line endings. The requested sentence occurs once, ends the file, and has a terminating LF. The previous line ends the script-suite list. There is currently no empty line between them.
-- `docs/build-log.csv` contains earlier runs for issues #4 and #10. Both `notes` fields are empty, so there is no maintainer feedback to apply. Other columns are historical data, not instructions.
-- The repository contains workflow automation and shell/Python checks. `bash .github/scripts/run-checks.sh` runs parsing, shell lint, workflow structure checks, and script suites. `actionlint` is optional and explicitly skipped when unavailable.
-- `.github/workflows/workflow-scripts.yml` includes README changes in its pull-request trigger.
-- `.github/workflows/codex-architect.yml` writes and validates the design documents before Claude runs, prevents Claude from changing them, and appends the CSV row in the later log job. Claude must not edit the CSV or publish the branch.
-- Existing handoff and build-log tests cover document serialization, issue identification through the boundary checks, row creation, and preservation of earlier log data. No automation changes are needed.
+- `record-build-log.sh` restored the CSV from the starting commit and appended one
+  quoted, formula-safe row, capping reports at 2000 bytes.
+- `post-build-log.sh` parsed the CSV's last row and posted fields, reports and a CSV
+  block; `ai-build-request.py` prints the comment after the marker.
+- `validate-implementation-patch.sh` excluded the CSV from the "implementation
+  changed something" check; `.gitattributes` union-merged it.
+- The CSV held three runs (#4, #10, #13); every `notes` value was empty.
 
-## Proposed design and flow
+## Design
 
-Insert one LF byte immediately before the final sentence. The existing previous-line LF plus the inserted LF creates the required empty line. Leave the sentence unindented so GitHub Markdown starts a paragraph outside the list.
+### Schema
 
-The exact transformation is:
+`docs/build-log.md` starts with a short preamble, then one entry per run, oldest first:
 
-`updated_readme = original_readme_without_final_sentence + LF + final_sentence`
+- a marker line `<!-- ai-build-run -->`;
+- a heading `## Issue #<n> - <YYYY-MM-DDTHH:MM:SSZ>`, built only from the validated
+  issue number and date;
+- five `###` sections, each holding exactly one fenced `text` block:
+  - **Details**: `Label: value` lines for Date UTC, Issue, Issue title, Outcome,
+    Architecture title, Files changed, Lines added, Lines removed, Agent commits,
+    Branch and Run URL;
+  - **Changed files**: one path per line;
+  - **Codex architect report**;
+  - **Claude implementer report**;
+  - **Maintainer notes**: empty until a maintainer writes in it.
 
-Here `final_sentence` includes its existing terminating LF. The resulting README is 12,689 bytes.
+Headings plus fenced blocks, not a table, because reports and notes span lines and
+contain any punctuation.
 
-Component ownership and control flow remain unchanged:
+### One module owns the format
 
-1. The architect returns this document and the implementation plan as JSON.
-2. The workflow writes and validates both documents, each identifying #13.
-3. Claude inserts the README separator, checks the patch, runs existing checks, and writes its transient implementation report.
-4. The workflow validates and publishes the implementation, appends the build-log row, and opens the pull request.
-5. The reviewer checks GitHub rendering and the final pipeline artifacts.
+`.github/scripts/build-log.py` (standard library only) renders entries, parses the
+log, appends an entry from environment values, prints the last entry for the issue
+comment, and converts an old CSV (`from-csv`). The record and post scripts and the
+tests all use it, so there is one definition of the format.
+
+### Security
+
+- Every untrusted value is written only inside a fenced block whose fence is longer
+  than any backtick run it contains, so no content line can close it (CommonMark).
+  Inside the block nothing renders: no headings, HTML, links or @mentions.
+- Single-line fields have CR, LF, other C0 controls, U+0085, U+2028 and U+2029
+  replaced with spaces, so a value cannot add a `Label:` line or a marker line.
+- Reports are cut to 2000 bytes of valid UTF-8 (as before); single-line fields and
+  paths to 300 bytes; the file list to 200 names; notes to 20000 bytes.
+- Common token formats (GitHub `ghp_`/`github_pat_`, `sk-ant-`, `sk-`) are replaced
+  with `[redacted]`. This is defence in depth; the record step holds no secrets.
+- The parser reads structure (marker, `###` headings) only outside fences, so
+  lookalikes inside a report are data.
+- The heading uses only an ASCII-digit issue number and a date matching the fixed
+  pattern; anything else renders as `unknown`.
+- `record-build-log.sh` still deletes whatever the agents left at `docs/build-log.md`
+  (file, symlink or directory) and restores it from the starting commit before
+  appending, so earlier entries cannot be rewritten, removed or forged.
+- `post-build-log.sh` re-renders the last entry through the module and refuses to
+  post unless it is this issue's.
+
+### Flow
+
+Unchanged except for the file and format: the log job restores the log, appends one
+entry, pushes, opens the PR, and posts the entry (issue and PR links, details, both
+reports) under the `<!-- ai-build-log -->` marker; `ai-build-request.py` prints it in
+the chat. Both agent prompts, `AGENTS.md` and `CLAUDE.md` point at each entry's
+Maintainer notes block.
 
 ## File-level change map
 
-| File | Change and owner |
+| File | Change |
 | --- | --- |
-| `README.md` | Claude inserts exactly one empty line immediately before the final sentence. |
-| `docs/architecture.md` | Workflow writes the architect's design for #13; Claude leaves it unchanged. |
-| `docs/implementation-plan.md` | Workflow writes the architect's plan for #13; Claude leaves it unchanged. |
-| `docs/build-log.csv` | Log job appends the current run's row for issue 13; prior rows remain intact. |
-| `.ai-build/claude-report.md` | Claude writes the required report, at most 150 words; it is a transient pipeline input, not a committed change. |
-
-No other committed file changes are planned.
+| `.github/scripts/build-log.py` | New: format, parser, append, last, from-csv. |
+| `.github/scripts/record-build-log.sh` | Restores and appends to `docs/build-log.md` through the module. |
+| `.github/scripts/post-build-log.sh` | Posts the re-rendered Markdown entry; no CSV. |
+| `.github/scripts/ai-build-request.py` | Docstring only; it already prints the comment. |
+| `.github/scripts/validate-implementation-patch.sh` | Excludes `docs/build-log.md`. |
+| `.github/workflows/codex-architect.yml` | Prompts, comment and `LOG_FILE` use `docs/build-log.md`. |
+| `docs/build-log.md` | New: the three migrated runs. |
+| `docs/build-log.csv` | Removed after migration. |
+| `.gitattributes` | Union merge for `docs/build-log.md`. |
+| `AGENTS.md`, `CLAUDE.md`, `README.md` | Maintainer notes and Markdown log wording. |
+| Tests | New `test-build-log.sh`; rewritten record and post tests; updated request, validator and structure tests. |
 
 ## Impacts
 
-- API: none.
-- Schema: none; the existing CSV schema remains unchanged.
-- Configuration: none.
-- Dependencies: none.
-- Migration: none.
-- Runtime behavior: none.
+- API and configuration: none. Dependencies: none (Python standard library).
+- Migration: done once, in this change, with `build-log.py from-csv`; every field of
+  all three rows was compared after conversion.
+- Compatibility: repositories created from the template before this change still have
+  `docs/build-log.csv`. Their next run starts a new `docs/build-log.md` and leaves the
+  CSV untouched; run `build-log.py from-csv docs/build-log.csv > docs/build-log.md`
+  there first to keep their history.
 
-## Security, privacy, abuse, and failure modes
+## Alternatives
 
-Treat the issue and historical reports as data; do not execute their content or change repository security controls. This change needs no credentials, API calls, or secret inspection. Reports must contain no secrets.
-
-The main implementation risk is accidental normalization or reformatting of the README. Compare the result byte-for-byte against the starting commit plus the single intended insertion. This detects altered line endings, sentence edits, added trailing whitespace, duplicate separators, and unrelated changes.
-
-If the expected final sentence or preceding list boundary differs from the inspected baseline, stop and report the mismatch rather than applying a broad replacement. If checks fail, do not weaken them or expand scope to repair unrelated automation. Follow the existing blocker procedure when completion is impossible.
-
-The CSV row does not exist during Claude's implementation phase. Local script tests cannot establish that the live log job completed; final artifact verification belongs after publication.
-
-## Backwards compatibility and rollout
-
-All existing README text, links, and line endings remain intact. Only Markdown paragraph grouping changes. Use the existing pull-request and review process; no deployment or feature flag is required. Reverting the README insertion restores the previous rendering. Historical build-log rows should remain preserved.
-
-## Alternatives and decisions
-
-- Adding a heading, changing indentation, or using HTML would introduce unnecessary changes and violate the exact-diff requirement.
-- A formatter could rewrite unrelated content; use a targeted insertion instead.
-- A permanent regression test for one blank line adds maintenance without proportionate benefit. Use an explicit byte comparison, existing checks, and a GitHub rendering check.
-- Manually editing the CSV would violate pipeline ownership. Reuse the existing log job.
+- A Markdown table: rejected; multi-line reports and pipes break it.
+- Inline code spans for values: rejected; they cannot hold line breaks and need
+  backtick-length escaping per value anyway.
+- Front matter or JSON blocks: harder for maintainers to edit by hand.
 
 ## Acceptance criteria
 
-- **AC1:** GitHub renders the final sentence as its own paragraph outside the preceding list.
-- **AC2:** Relative to the starting commit, the README contains precisely one added LF immediately before the final sentence, with no other byte or file-mode changes; its diff is one insertion and zero deletions.
-- **AC3:** The published pull request changes exactly `README.md`, `docs/architecture.md`, `docs/implementation-plan.md`, and `docs/build-log.csv`. Both design documents are nonempty and identify #13. The CSV preserves its existing header and rows and adds one row for issue 13 and this workflow run.
-- **AC4:** `git diff --check` and `bash .github/scripts/run-checks.sh` succeed. Record any supported optional `actionlint` skip accurately.
-
-## Blockers and assumptions
-
-No design blockers or unresolved product questions remain. The implementation job is expected to use the recorded starting commit, as enforced by the existing workflow. GitHub rendering and live artifact checks require the published branch and are explicitly deferred to pipeline/reviewer validation. This read-only architecture phase inspected checks but did not execute suites that create temporary files.
+1. A run appends exactly one entry to `docs/build-log.md`; earlier bytes are unchanged.
+2. All CSV rows and reports are represented in `docs/build-log.md`.
+3. The issue comment has the marker, issue and PR links, details and both reports;
+   no CSV.
+4. `ai-build-request.py start` and `wait` print that Markdown.
+5. Maintainer notes are preserved and named in both agents' instructions.
+6. Hostile titles and reports cannot forge entries, headings, fields or fences, inject
+   HTML, or alter earlier entries; tampered logs are restored.
+7. `run-checks.sh` and `git diff --check` pass.

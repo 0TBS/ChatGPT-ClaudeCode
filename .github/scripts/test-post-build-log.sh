@@ -3,7 +3,8 @@
 # was called and keeps the comment body. No network access is used.
 set -uo pipefail
 
-script="$(cd "$(dirname "$0")" && pwd)/post-build-log.sh"
+here="$(cd "$(dirname "$0")" && pwd)"
+script="$here/post-build-log.sh"
 root=$(mktemp -d)
 trap 'rm -rf "$root"' EXIT
 failures=0
@@ -20,19 +21,25 @@ echo "https://github.com/o/r/issues/7#issuecomment-1"
 EOF
 chmod +x "$root/bin/gh" || die "chmod"
 
-HEADER=date_utc,issue,issue_title,outcome,architecture_title,files_changed,lines_added,lines_removed,agent_commits,changed_files,branch,run_url,codex_report,claude_report,notes
-OLD='"2026-01-01T00:00:00Z","3","Old","implemented","","1","1","0","0","a.md","b","u","old codex","old claude",""'
+# log <issue> <codex report> <claude report> [issue title]: a log with an
+# earlier entry for #3 and this run's entry last.
+log() {
+  rm -f "$root/build-log.md"
+  env -i PATH="$PATH" ISSUE_NUMBER=3 DATE_UTC=2026-01-01T00:00:00Z ISSUE_TITLE=Old \
+    CODEX_REPORT="old codex" python3 "$here/build-log.py" append "$root/build-log.md" || die "old entry"
+  env -i PATH="$PATH" ISSUE_NUMBER="$1" DATE_UTC=2026-09-22T00:00:00Z ISSUE_TITLE="${4:-Add feature}" \
+    BRANCH=ai/issue-7-1-1 RUN_URL=https://github.com/o/r/actions/runs/9 CHANGED_FILES=$'a.md\nb.md' \
+    FILES_CHANGED=2 LINES_ADDED=5 LINES_REMOVED=1 CODEX_REPORT="$2" CLAUDE_REPORT="$3" \
+    python3 "$here/build-log.py" append "$root/build-log.md" || die "new entry"
+}
 
-# run <codex report> <claude report> [issue title]
 run() {
-  printf '%s\n%s\n"2026-09-22T00:00:00Z","7","%s","implemented","Design","2","5","1","0","a; b","ai/issue-7-1-1","https://github.com/o/r/actions/runs/9","%s","%s",""\n' \
-    "$HEADER" "$OLD" "${3:-Add feature}" "$1" "$2" > "$root/log.csv" || die "write log"
   : > "$root/calls"; rm -f "$root/body.md" "$root/posted.md"
   (
     cd "${RUN_DIR:-$root/outside}" || exit 2
     PATH="$root/bin:$PATH" FAKE_LOG="$root/calls" FAKE_BODY="$root/posted.md" \
-      GH_TOKEN=t GITHUB_REPOSITORY=o/r ISSUE_NUMBER="${ISSUE:-7}" LOG_FILE="$root/log.csv" \
-      BODY_FILE="$root/body.md" PR_URL="https://github.com/o/r/pull/8" \
+      GH_TOKEN=t GITHUB_REPOSITORY=o/r ISSUE_NUMBER="${ISSUE:-7}" LOG_FILE="$root/build-log.md" \
+      BODY_FILE="$root/body.md" PR_URL="${PR:-https://github.com/o/r/pull/8}" \
       GH_REPO=evil/repo GH_HOST=evil.example.com \
       bash "$script"
   ) >"$root/out" 2>&1
@@ -43,60 +50,65 @@ check() {
     echo "FAIL $1"; sed 's/^/     | /' "$root/out" "$root/posted.md" 2>/dev/null; failures=$((failures + 1)); fi
 }
 
-run "Chose a CLI." "Built it; tests pass."; rc=$?
+# Lines of the comment a Markdown renderer treats as Markdown, not code.
+visible() {
+  python3 - "$root/posted.md" <<'EOF'
+import re, sys
+fence = None
+for line in open(sys.argv[1], encoding="utf-8").read().split("\n"):
+    if fence:
+        m = re.match(r"^ {0,3}(`+)\s*$", line)
+        if m and len(m.group(1)) >= len(fence):
+            fence = None
+        continue
+    m = re.match(r"^ {0,3}(`{3,})[^`]*$", line)
+    if m:
+        fence = m.group(1)
+        continue
+    print(line)
+EOF
+}
+
+log 7 "Chose a CLI." $'Built it.\nTests pass.'; run; rc=$?
 ok=0; [ "$rc" -eq 0 ] && grep -qF 'CALL [issue] [comment] [7] [--repo] [o/r] [--body-file]' "$root/calls" && ok=1
 check "comments on the issue that started the run" "$ok"
 ok=0; grep -qxF 'GH_HOST=github.com GH_REPO=' "$root/calls" && ok=1
 check "pins the GitHub host and ignores GH_REPO" "$ok"
-ok=0; grep -qxF 'Chose a CLI.' "$root/posted.md" && grep -qxF 'Built it; tests pass.' "$root/posted.md" &&
-  grep -qF 'Pull request: https://github.com/o/r/pull/8' "$root/posted.md" && ok=1
-check "posts both reports and the pull request link" "$ok"
-ok=0; grep -qxF 'issue: 7' "$root/posted.md" && grep -qxF 'lines_added: 5' "$root/posted.md" &&
-  ! grep -qF 'old codex' "$root/posted.md" && ok=1
-check "posts this run's row, not an earlier one" "$ok"
 ok=0; [ "$(head -n 1 "$root/posted.md")" = "<!-- ai-build-log -->" ] && ok=1
-check "marks the comment so the Codex-side script can find it" "$ok"
-ok=0; python3 - "$root/posted.md" <<'PY' && ok=1
-import csv, io, re, sys
-text = open(sys.argv[1]).read()
-m = re.search(r"^(`{3,})csv\n(.*?)\n\1$", text, re.S | re.M)
-rows = list(csv.reader(io.StringIO(m.group(2)))) if m else []
-sys.exit(0 if len(rows) == 2 and rows[0][0] == "date_utc" and rows[1][1] == "7"
-         and rows[1][13] == "Built it; tests pass." else 1)
-PY
-check "includes the header and this run's row as CSV" "$ok"
+check "starts with the marker the Codex-side script looks for" "$ok"
+ok=0; grep -qxF 'Issue: #7' "$root/posted.md" && grep -qxF 'Pull request: https://github.com/o/r/pull/8' "$root/posted.md" && ok=1
+check "links the issue and the pull request" "$ok"
+ok=0; grep -qxF '## Issue #7 - 2026-09-22T00:00:00Z' "$root/posted.md" && grep -qxF 'Lines added: 5' "$root/posted.md" &&
+  grep -qxF 'b.md' "$root/posted.md" && ! grep -qF 'old codex' "$root/posted.md" && ok=1
+check "posts this run's details and changed files, not an earlier entry" "$ok"
+ok=0; grep -qxF 'Chose a CLI.' "$root/posted.md" && grep -qxF 'Tests pass.' "$root/posted.md" &&
+  grep -qxF '### Codex architect report' "$root/posted.md" && grep -qxF '### Claude implementer report' "$root/posted.md" &&
+  grep -qxF '### Maintainer notes' "$root/posted.md" && ok=1
+check "posts both reports, multi-line, and the notes section" "$ok"
+ok=0; ! grep -qiE 'csv' "$root/posted.md" && ok=1
+check "prints no CSV" "$ok"
+ok=0; python3 "$here/build-log.py" parse "$root/posted.md" | python3 -c 'import json,sys; e=json.load(sys.stdin); sys.exit(0 if len(e)==1 and e[0]["issue"]=="7" else 1)' && ok=1
+check "the comment's entry parses as one build-log entry" "$ok"
 
-# A quoted CSV value can span lines; a line of bare backticks inside it must
-# not close the fence early.
-run $'x\n```\n@someone [x](http://evil)\n````' 'ok' '@team <b>hi</b>'
-ok=0; python3 - "$root/posted.md" <<'EOF' && ok=1
-import re, sys
-text = open(sys.argv[1]).read()
-# Every untrusted value must sit inside a fenced block whose fence is longer
-# than any backtick run inside it, so nothing in it renders or pings.
-inside, fence, bad = False, "", []
-for line in text.splitlines():
-    m = re.match(r"^(`{3,})(text|csv)?$", line)
-    if not inside and m and m.group(2):
-        inside, fence = True, m.group(1)
-    elif inside and line == fence:
-        inside = False
-    elif not inside and ("@someone" in line or "@team" in line or "evil" in line):
-        bad.append(line)
-sys.exit(1 if bad or inside else 0)
-EOF
-check "untrusted values stay inside fences, so mentions and links are not rendered" "$ok"
+log 7 $'x\n```\n@someone [x](http://evil)\n<script>alert(1)</script>\n````' '<img src=x onerror=alert(1)>' '@team <b>hi</b> ```'
+run; rc=$?
+ok=0; [ "$rc" -eq 0 ] && ! visible | grep -qE '@someone|@team|evil|<script|<img|<b>' && ok=1
+check "mentions, links, HTML and fence breaks stay inside code blocks" "$ok"
 
-run "" ""
-ok=0; [ "$(grep -cxF '(no report)' "$root/posted.md")" = 2 ] && ok=1
-check "says so when an agent wrote no report" "$ok"
+log 3 a b; run; rc=$?
+ok=0; [ "$rc" -ne 0 ] && grep -q "not this run's" "$root/out" && [ ! -s "$root/calls" ] && ok=1
+check "refuses when the last entry is another issue's" "$ok"
 
-ISSUE='7; rm -rf /' run a b; rc=$?
+log 7 a b; PR=$'javascript:alert(1)' run; rc=$?
+ok=0; [ "$rc" -eq 0 ] && ! grep -qF 'javascript' "$root/posted.md" && ! grep -q '^Pull request:' "$root/posted.md" && ok=1
+check "leaves out a pull-request URL that is not https" "$ok"
+
+ISSUE='7; rm -rf /' run; rc=$?
 ok=0; [ "$rc" -ne 0 ] && [ ! -s "$root/calls" ] && ok=1
 check "refuses a non-numeric issue number" "$ok"
 
 { mkdir -p "$root/repo" && git init -q "$root/repo"; } || die "init repo"
-RUN_DIR="$root/repo" run a b; rc=$?
+RUN_DIR="$root/repo" run; rc=$?
 ok=0; [ "$rc" -ne 0 ] && grep -q "outside the repository checkout" "$root/out" && [ ! -s "$root/calls" ] && ok=1
 check "refuses to run inside a repository checkout" "$ok"
 
