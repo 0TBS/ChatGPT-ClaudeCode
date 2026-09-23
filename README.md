@@ -55,11 +55,23 @@ Then, in a Codex chat on that environment, ask for a build, for example:
 > Start an ai-build: add a contact page with a form that emails us.
 
 Codex follows `AGENTS.md`: it writes the issue and runs
-`python3 .github/scripts/ai-build-request.py start --title … --body-file …`. That
-script opens the issue, adds the `ai-build` label (which starts the workflow), and
-waits for the build log. It prints the run's Markdown build-log entry, including
-both reports, or the run's link if the run failed. A build usually takes 5 to 10 minutes; if the
-chat's wait runs out first, ask Codex to run `ai-build-request.py wait <issue number>`.
+`python3 .github/scripts/ai-build-request.py start --title … --body-file …
+--report-file /tmp/ai-build-report.md`. That script opens the issue, adds the
+`ai-build` label (which starts the workflow), and waits for the build log. It prints
+the run's Markdown build-log entry, including both reports, or the run's link if the
+run failed. A build usually takes 5 to 10 minutes; if the chat's wait runs out first,
+ask Codex to run `ai-build-request.py wait <issue number> --report-file …`.
+
+`--report-file PATH` (on `start` and `wait`) also saves the report as a real local
+Markdown file, for Codex to return to you with its path. The file holds exactly the
+report the script prints, taken from the workflow's own comment on the issue (only
+comments by `github-actions[bot]` count), and the script ends with
+`Markdown report file: PATH`. Choose a path outside the repository. The file is
+written atomically; a symlink or directory at PATH, or a missing parent directory,
+is refused before anything is sent to GitHub, and `start --no-wait` cannot be
+combined with it. A failed or timed-out wait writes nothing and leaves an existing
+file at PATH as it was. Whether the chat shows the file as an attachment is up to the
+chat; the script only creates the file.
 
 Codex cannot be messaged from GitHub, so the chat has to fetch the result itself. It
 cannot see results from runs it did not wait for, but the same build log is always

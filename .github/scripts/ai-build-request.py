@@ -3,8 +3,9 @@
 
 Run by Codex in a Codex cloud task (see AGENTS.md), not by the workflow:
 
-    python3 .github/scripts/ai-build-request.py start --title "..." --body-file request.md
-    python3 .github/scripts/ai-build-request.py wait 12
+    python3 .github/scripts/ai-build-request.py start --title "..." --body-file request.md \
+        --report-file /tmp/ai-build-report.md
+    python3 .github/scripts/ai-build-request.py wait 12 --report-file /tmp/ai-build-report.md
 
 `start` opens an issue, adds the `ai-build` label (which starts the
 workflow), then waits like `wait`. `wait` polls the issue until the
@@ -12,6 +13,10 @@ workflow posts its build-log comment and prints it: a Markdown report of the
 run with both agents' reports, so the result lands in the chat that asked
 for it. It stops early with the run's link if the run fails before posting,
 and gives up after --timeout seconds.
+
+With --report-file PATH, a successful `start` or `wait` also saves that same
+report, as printed, to a local Markdown file. The file is replaced atomically
+and never through a symlink; a failed or timed-out wait leaves PATH untouched.
 
 Needs GH_TOKEN (or GITHUB_TOKEN): a fine-grained token for the repository
 with Issues read/write and Actions read. The repository comes from --repo,
@@ -24,6 +29,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -126,6 +132,54 @@ def build_log(gh, number):
     return logs[-1]["body"][len(MARKER):].lstrip("\n") if logs else None
 
 
+def check_report_path(path):
+    """Refuse a destination that cannot safely receive the report: a symlink,
+    a directory, or a path whose parent directory does not exist."""
+    dest = os.path.abspath(path)
+    if os.path.islink(dest):
+        die(f"--report-file {dest} is a symlink; choose another path.")
+    if os.path.isdir(dest):
+        die(f"--report-file {dest} is a directory; choose a file path.")
+    if not os.path.isdir(os.path.dirname(dest)):
+        die(f"--report-file {dest}: the parent directory does not exist.")
+    return dest
+
+
+def write_report(dest, report):
+    """Replace dest atomically with the report, ending in exactly one newline.
+    The temporary file is created next to dest and removed on any failure;
+    os.replace renames over dest, so a symlink there is replaced, never followed."""
+    fd, tmp = tempfile.mkstemp(prefix=".ai-build-report-", suffix=".tmp", dir=os.path.dirname(dest))
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8", newline="\n") as f:
+            f.write(report.rstrip("\n") + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        if os.path.islink(dest) or os.path.isdir(dest):
+            raise OSError(f"{dest} became a symlink or directory")
+        os.replace(tmp, dest)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def deliver(report, args):
+    """Print the report and, with --report-file, save it."""
+    print(report, flush=True)
+    if not getattr(args, "report_file", None):
+        return 0
+    try:
+        write_report(args.report_file, report)
+    except OSError as err:
+        print(f"error: could not write the report file: {err.strerror or err}", file=sys.stderr)
+        return 1
+    print(f"Markdown report file: {args.report_file}")
+    return 0
+
+
 def wait(gh, number, args):
     _, issue = gh.call("GET", f"/issues/{number}")
     # Runs for this issue start after it was opened; allow for clock skew.
@@ -136,15 +190,13 @@ def wait(gh, number, args):
     while True:
         log = build_log(gh, number)
         if log:
-            print(log)
-            return 0
+            return deliver(log, args)
         run = failed_run(gh, issue["title"], since)
         if run:
             # A blocked run posts its log, then fails: look once more.
             log = build_log(gh, number)
             if log:
-                print(log)
-                return 0
+                return deliver(log, args)
             print(f"The build ended with '{run.get('conclusion')}' before posting a build log: "
                   f"{run.get('html_url')}")
             return 1
@@ -167,7 +219,15 @@ def main():
     s.add_argument("--no-wait", action="store_true")
     w = sub.add_parser("wait", help="wait for an issue's build log and print it")
     w.add_argument("number", type=int)
+    for p in (s, w):
+        p.add_argument("--report-file", metavar="PATH",
+                       help="also save the Markdown report to this local file on success")
     args = parser.parse_args()
+    if args.report_file:
+        if args.command == "start" and args.no_wait:
+            parser.error("--report-file cannot be used with --no-wait: no report exists yet.")
+        # Checked before any GitHub call, so a bad path never starts a build.
+        args.report_file = check_report_path(args.report_file)
 
     token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN")
     if not token:
